@@ -1,0 +1,7 @@
+# Build output
+system/
+*.zip
+
+# Editor
+.vscode/
+.idea/

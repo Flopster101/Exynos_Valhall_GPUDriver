@@ -1,0 +1,4 @@
+# Ignore all blobs — users place their own driver binaries here
+*
+*/
+!.gitignore
