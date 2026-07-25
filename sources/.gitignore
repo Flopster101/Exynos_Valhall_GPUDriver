@@ -2,3 +2,14 @@
 *
 */
 !.gitignore
+!vendor/
+!vendor/opencl_compat/
+!vendor/opencl_compat/README.md
+!vendor/opencl_compat/exynos2100/
+!vendor/opencl_compat/exynos2100/.gitkeep
+!vendor/opencl_compat/exynos1280/
+!vendor/opencl_compat/exynos1280/.gitkeep
+!vendor/opencl_compat/exynos1380/
+!vendor/opencl_compat/exynos1380/.gitkeep
+!vendor/opencl_compat/exynos1330/
+!vendor/opencl_compat/exynos1330/.gitkeep

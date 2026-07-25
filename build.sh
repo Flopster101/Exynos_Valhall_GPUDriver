@@ -8,7 +8,7 @@ MODULE_PROP="$SCRIPT_DIR/module.prop"
 
 DRIVER_VER="r49p1"
 
-BUILD_ITERATION="1"
+BUILD_ITERATION="2"
 
 # Get git hash if available
 GIT_HASH=""
@@ -31,7 +31,7 @@ echo " Version: $VER_STRING"
 echo ""
 
 rm -rf "$OUTPUT"
-mkdir -p "$OUTPUT/vendor"
+mkdir -p "$OUTPUT/vendor" "$OUTPUT/compat_opencl"
 
 # Check sources
 MALI_64="$SOURCES/vendor/mali/libGLES_mali.so.64"
@@ -44,7 +44,7 @@ if [ ! -f "$MALI_64" ]; then
 fi
 
 # Mali blobs
-echo "[1/4] Copying Mali blobs..."
+echo "[1/6] Copying Mali blobs..."
 mkdir -p "$OUTPUT/vendor/lib64/egl" "$OUTPUT/vendor/lib/egl"
 cp "$MALI_64" "$OUTPUT/vendor/lib64/egl/libGLES_mali.so"
 echo "  64-bit: $(stat -c%s "$OUTPUT/vendor/lib64/egl/libGLES_mali.so") bytes"
@@ -56,8 +56,40 @@ else
     echo "  32-bit: not found, skipping"
 fi
 
+# OpenCL compatibility is private to patched Samsung SPHAL clients. Normal
+# public libOpenCL.so clients must continue using the r49 runtime.
+echo "[2/6] Staging platform OpenCL compatibility payloads (optional)..."
+OCL_COMPAT_ROOT="$SOURCES/vendor/opencl_compat"
+OCL_COMPAT_PLATFORMS="exynos2100 exynos1280 exynos1380 exynos1330"
+OCL_COMPAT_COUNT=0
+
+for platform in $OCL_COMPAT_PLATFORMS; do
+    platform_dir="$OCL_COMPAT_ROOT/$platform"
+    runtime_64="$platform_dir/libOpenCL.64.so"
+    if [ ! -f "$runtime_64" ]; then
+        continue
+    fi
+    if ! readelf -d "$runtime_64" | grep -q 'Library soname: \[libOpenCL.so\]'; then
+        echo "Error: $runtime_64 must have SONAME libOpenCL.so"
+        exit 1
+    fi
+
+    output_dir="$OUTPUT/compat_opencl/$platform"
+    mkdir -p "$output_dir"
+    cp "$runtime_64" "$output_dir/libOCLc.64.so"
+    patchelf --set-soname libOCLc.so "$output_dir/libOCLc.64.so"
+    echo "  $platform: 64-bit compatibility runtime"
+    OCL_COMPAT_COUNT=$((OCL_COMPAT_COUNT + 1))
+done
+
+if [ "$OCL_COMPAT_COUNT" -gt 0 ]; then
+    echo "  Private runtime only; public OpenCL remains r49"
+else
+    echo "  No platform compatibility runtime supplied; OpenCL patches disabled"
+fi
+
 # HAL support libs
-echo "[2/4] Copying HAL support libs..."
+echo "[3/6] Copying HAL support libs..."
 SUPPORT_64="$SOURCES/vendor/support/lib64"
 SUPPORT_32="$SOURCES/vendor/support/lib"
 
@@ -74,8 +106,13 @@ if [ -d "$SUPPORT_32" ]; then
     done
 fi
 
+# These direct OpenCL clients hard-code the SPHAL library name. customize.sh
+# copies and patches only matching files from the target device at install
+# time, so a device never receives camera libraries it did not ship with.
+echo "[4/6] Camera SPHAL patches are applied from device files at install time"
+
 # Vulkan permission files
-echo "[3/4] Copying Vulkan permission files..."
+echo "[5/6] Copying Vulkan permission files..."
 PERMS="$SOURCES/vendor/permissions"
 if [ -d "$PERMS" ]; then
     mkdir -p "$OUTPUT/vendor/etc/permissions"
@@ -85,7 +122,7 @@ if [ -d "$PERMS" ]; then
 fi
 
 # Vulkan HAL shim (optional)
-echo "[4/4] Copying Vulkan HAL shim (optional)..."
+echo "[6/6] Copying Vulkan HAL shim (optional)..."
 VKSHIM_64="$SOURCES/vendor/vkshim/vulkan.mali.64.so"
 VKSHIM_32="$SOURCES/vendor/vkshim/vulkan.mali.32.so"
 
@@ -111,9 +148,12 @@ sed -i "s/^versionCode=.*/versionCode=${BUILD_ITERATION}/" "$MODULE_PROP"
 echo ""
 echo "Assembling module"
 TEMP_DIR=$(mktemp -d)
-STAGING="$TEMP_DIR/system/vendor"
-mkdir -p "$STAGING"
-cp -r "$OUTPUT/vendor"/* "$STAGING/"
+STAGING_VENDOR="$TEMP_DIR/system/vendor"
+mkdir -p "$STAGING_VENDOR"
+cp -r "$OUTPUT/vendor"/* "$STAGING_VENDOR/"
+if [ -n "$(find "$OUTPUT/compat_opencl" -mindepth 1 -print -quit)" ]; then
+    cp -r "$OUTPUT/compat_opencl" "$TEMP_DIR/"
+fi
 cp "$SCRIPT_DIR/module.prop" "$TEMP_DIR/"
 cp "$SCRIPT_DIR/customize.sh" "$TEMP_DIR/"
 cp -r "$SCRIPT_DIR/META-INF" "$TEMP_DIR/"
@@ -122,6 +162,7 @@ cp -r "$SCRIPT_DIR/META-INF" "$TEMP_DIR/"
 [ -f "$SCRIPT_DIR/LICENSE" ] && cp "$SCRIPT_DIR/LICENSE" "$TEMP_DIR/"
 
 cd "$TEMP_DIR"
+rm -f "$SCRIPT_DIR/$ZIP_NAME"
 zip -r "$SCRIPT_DIR/$ZIP_NAME" . -x "*.git*" > /dev/null
 cd "$SCRIPT_DIR"
 

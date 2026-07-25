@@ -10,24 +10,49 @@ case "$CHIP" in
     exynos2100|exynos2100_r)
         GPU_NAME="Mali-G78 MP14"
         SOC_NAME="Exynos 2100"
+        COMPAT_PLATFORM="exynos2100"
         ;;
     s5e8825|erd8825)
         GPU_NAME="Mali-G68 MP4"
         SOC_NAME="Exynos 1280"
+        COMPAT_PLATFORM="exynos1280"
+        ;;
+    s5e8835|erd8835|exynos1380)
+        GPU_NAME="Mali-G68"
+        SOC_NAME="Exynos 1380"
+        COMPAT_PLATFORM="exynos1380"
+        ;;
+    s5e8535|erd8535|exynos1330)
+        GPU_NAME="Mali-G68"
+        SOC_NAME="Exynos 1330"
+        COMPAT_PLATFORM="exynos1330"
         ;;
     *)
         case "$PLATFORM" in
             exynos2100|exynos2100_r)
                 GPU_NAME="Mali-G78 MP14"
                 SOC_NAME="Exynos 2100"
+                COMPAT_PLATFORM="exynos2100"
                 ;;
             s5e8825|erd8825)
                 GPU_NAME="Mali-G68 MP4"
                 SOC_NAME="Exynos 1280"
+                COMPAT_PLATFORM="exynos1280"
+                ;;
+            s5e8835|erd8835|exynos1380)
+                GPU_NAME="Mali-G68"
+                SOC_NAME="Exynos 1380"
+                COMPAT_PLATFORM="exynos1380"
+                ;;
+            s5e8535|erd8535|exynos1330)
+                GPU_NAME="Mali-G68"
+                SOC_NAME="Exynos 1330"
+                COMPAT_PLATFORM="exynos1330"
                 ;;
             *)
                 GPU_NAME="Mali-G78/G68"
                 SOC_NAME="Exynos 2100/1280"
+                COMPAT_PLATFORM=""
                 ;;
         esac
         ;;
@@ -57,8 +82,100 @@ check_conflicting_modules
 sleep 1
 
 set_perm_recursive $MODPATH/system/vendor 0 0 0755 0644 u:object_r:same_process_hal_file:s0
+[ -d "$MODPATH/system/lib64" ] && set_perm_recursive $MODPATH/system/lib64 0 0 0755 0644 u:object_r:system_file:s0
 
-# Copy blob to root lib paths (replaces stock symlinks so NoMount can intercept)
+# Keep compatibility payloads outside system/ in the archive. A platform must
+# provide its own 64-bit runtime before any public OpenCL replacement or SPHAL
+# patch is enabled.
+COMPAT_OPENCL_READY=false
+COMPAT_OPENCL_DIR="$MODPATH/compat_opencl/$COMPAT_PLATFORM"
+COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/libOCLc.64.so"
+ARCSOFT_SO="/system/lib64/libsuperresolution.arcsoft.so"
+LLHDR_SO="/system/lib64/liblow_light_hdr.arcsoft.so"
+DUALCAM_REFOCUS_SO="/vendor/lib64/libdualcam_refocus_image.so"
+HAS_SPHAL_OPENCL_CLIENT=false
+
+for sp_hal_client in "$ARCSOFT_SO" "$LLHDR_SO" "$DUALCAM_REFOCUS_SO"; do
+    if [ -f "$sp_hal_client" ]; then
+        HAS_SPHAL_OPENCL_CLIENT=true
+        break
+    fi
+done
+
+if [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_RUNTIME_64" ] && [ "$HAS_SPHAL_OPENCL_CLIENT" = true ]; then
+    mkdir -p "$MODPATH/system/vendor/lib64"
+    cp "$COMPAT_RUNTIME_64" "$MODPATH/system/vendor/lib64/libOCLc.so"
+    set_perm "$MODPATH/system/vendor/lib64/libOCLc.so" 0 0 0644 u:object_r:same_process_hal_file:s0
+    ui_print " - $SOC_NAME private OpenCL compatibility runtime"
+    COMPAT_OPENCL_READY=true
+elif [ "$HAS_SPHAL_OPENCL_CLIENT" = false ]; then
+    ui_print " - No Samsung SPHAL OpenCL clients; keeping r49 OpenCL"
+else
+    ui_print " - No $SOC_NAME OpenCL compatibility runtime; keeping r49 OpenCL"
+fi
+
+# The selected payload is now staged below vendor. Do not retain unused
+# platform runtimes in the installed module.
+rm -rf "$MODPATH/compat_opencl"
+
+# Direct OpenCL consumers bypass the public dispatcher by opening
+# libOpenCL.so through the SPHAL namespace. NoMount cannot redirect that name
+# because the stock symlink resolves to r49 before lookup. Patch only the
+# verified loader argument in known matching binaries to libOCLc.so. These
+# clients are optional: some supported devices do not ship every library.
+patch_sphal_opencl_loader() {
+    local label="$1"
+    local source_file="$2"
+    local module_file="$3"
+    local expected_sha256="$4"
+    local offset="$5"
+    local selabel="$6"
+
+    if [ ! -f "$source_file" ]; then
+        ui_print " - Skipping $label SPHAL patch (library not shipped)"
+        return 0
+    fi
+
+    actual_sha256=$(sha256sum "$source_file" | awk '{print $1}')
+    actual_loader=$(dd if="$source_file" bs=1 skip="$offset" count=13 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    if [ "$actual_sha256" != "$expected_sha256" ] && [ "$actual_loader" != "6c69624f434c632e736f000000" ] && [ "$actual_loader" != "6c69624f434c33382e736f0000" ]; then
+        ui_print " - Skipping $label SPHAL patch (unrecognised binary)"
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$module_file")"
+    cp "$source_file" "$module_file"
+    printf 'libOCLc.so\0\0\0' | dd of="$module_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+    set_perm "$module_file" 0 0 0644 "$selabel"
+    if [ "$actual_sha256" = "$expected_sha256" ]; then
+        ui_print " - Patched $label SPHAL OpenCL loader to private runtime"
+    else
+        ui_print " - Reused existing $label SPHAL OpenCL override"
+    fi
+}
+
+if [ "$COMPAT_OPENCL_READY" = true ]; then
+    ARCSOFT_MOD_SO="$MODPATH/system/lib64/libsuperresolution.arcsoft.so"
+    ARCSOFT_SHA256="b0c6dbb80ef29d79527982bfe3747d0646717625849fa5c6024068746afacff3"
+    ARCSOFT_OFFSET=287457
+    patch_sphal_opencl_loader "ArcSoft" "$ARCSOFT_SO" "$ARCSOFT_MOD_SO" "$ARCSOFT_SHA256" "$ARCSOFT_OFFSET" "u:object_r:system_file:s0"
+
+    LLHDR_MOD_SO="$MODPATH/system/lib64/liblow_light_hdr.arcsoft.so"
+    LLHDR_SHA256="90ad0c013698eaebccac5412ecaf9abea0c485f08a033aa002b51219c068cd37"
+    LLHDR_OFFSET=138534
+    patch_sphal_opencl_loader "LLHDR" "$LLHDR_SO" "$LLHDR_MOD_SO" "$LLHDR_SHA256" "$LLHDR_OFFSET" "u:object_r:system_file:s0"
+
+    DUALCAM_REFOCUS_MOD_SO="$MODPATH/system/vendor/lib64/libdualcam_refocus_image.so"
+    DUALCAM_REFOCUS_SHA256="035c1e78e2d3d6d73de3926290db1c505b7c8004e3d237d3477ec6c4dcca5748"
+    DUALCAM_REFOCUS_OFFSET=251355
+    patch_sphal_opencl_loader "DualCam refocus" "$DUALCAM_REFOCUS_SO" "$DUALCAM_REFOCUS_MOD_SO" "$DUALCAM_REFOCUS_SHA256" "$DUALCAM_REFOCUS_OFFSET" "u:object_r:same_process_hal_file:s0"
+else
+    ui_print " - Camera SPHAL OpenCL patches disabled"
+fi
+
+# Copy blob to root lib paths (replaces stock symlinks so NoMount can intercept).
+# The optional OpenCL payload is already a regular file and must not be changed
+# here: its public shim dispatches 64-bit OpenCL calls into private r38/r32.
 if [ -f "$MODPATH/system/vendor/lib64/egl/libGLES_mali.so" ]; then
     cp "$MODPATH/system/vendor/lib64/egl/libGLES_mali.so" "$MODPATH/system/vendor/lib64/libGLES_mali.so"
 fi

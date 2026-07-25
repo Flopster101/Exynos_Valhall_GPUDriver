@@ -1,6 +1,6 @@
 id=exynos_valhall_gpudriver
 name=Exynos Valhall GPU Driver (1280 / 2100)
-version=v1.0.0-1
-versionCode=1
+version=v1.0.0-13
+versionCode=13
 author=Flopster101
 description=Updated Mali GPU driver (r49p1) for Exynos 1280 (Mali-G68) and Exynos 2100 (Mali-G78).
