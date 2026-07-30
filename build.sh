@@ -82,6 +82,9 @@ for platform in $OCL_COMPAT_PLATFORMS; do
     target_file="$OUTPUT_COMPAT/libOCLc.${soc_num}.so"
     cp "$runtime_64" "$target_file"
     patchelf --set-soname libOCLc.so "$target_file"
+    if [ -f "$platform_dir/NOTICE" ]; then
+        cp "$platform_dir/NOTICE" "$OUTPUT_COMPAT/NOTICE.${soc_num}"
+    fi
     echo "  $platform: 64-bit compatibility runtime (libOCLc.${soc_num}.so)"
     OCL_COMPAT_COUNT=$((OCL_COMPAT_COUNT + 1))
 done
