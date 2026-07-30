@@ -63,6 +63,10 @@ OCL_COMPAT_ROOT="$SOURCES/vendor/opencl_compat"
 OCL_COMPAT_PLATFORMS="exynos2100 exynos1280 exynos1380 exynos1330"
 OCL_COMPAT_COUNT=0
 
+OUTPUT_COMPAT="$OUTPUT/compat_opencl"
+rm -rf "$OUTPUT_COMPAT"
+mkdir -p "$OUTPUT_COMPAT"
+
 for platform in $OCL_COMPAT_PLATFORMS; do
     platform_dir="$OCL_COMPAT_ROOT/$platform"
     runtime_64="$platform_dir/libOpenCL.64.so"
@@ -74,11 +78,11 @@ for platform in $OCL_COMPAT_PLATFORMS; do
         exit 1
     fi
 
-    output_dir="$OUTPUT/compat_opencl/$platform"
-    mkdir -p "$output_dir"
-    cp "$runtime_64" "$output_dir/libOCLc.64.so"
-    patchelf --set-soname libOCLc.so "$output_dir/libOCLc.64.so"
-    echo "  $platform: 64-bit compatibility runtime"
+    soc_num="${platform#exynos}"
+    target_file="$OUTPUT_COMPAT/libOCLc.${soc_num}.so"
+    cp "$runtime_64" "$target_file"
+    patchelf --set-soname libOCLc.so "$target_file"
+    echo "  $platform: 64-bit compatibility runtime (libOCLc.${soc_num}.so)"
     OCL_COMPAT_COUNT=$((OCL_COMPAT_COUNT + 1))
 done
 

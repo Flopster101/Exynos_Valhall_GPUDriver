@@ -89,9 +89,19 @@ set_perm_recursive $MODPATH/system/vendor 0 0 0755 0644 u:object_r:same_process_
 # Keep compatibility payloads outside system/ in the archive. A platform must
 # provide its own 64-bit runtime before any public OpenCL replacement or SPHAL
 # patch is enabled.
+SOC_NUM="${COMPAT_PLATFORM#exynos}"
 COMPAT_OPENCL_READY=false
-COMPAT_OPENCL_DIR="$MODPATH/compat_opencl/$COMPAT_PLATFORM"
-COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/libOCLc.64.so"
+COMPAT_OPENCL_DIR="$MODPATH/compat_opencl"
+COMPAT_RUNTIME_64=""
+
+if [ -n "$SOC_NUM" ] && [ -f "$COMPAT_OPENCL_DIR/libOCLc.${SOC_NUM}.so" ]; then
+    COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/libOCLc.${SOC_NUM}.so"
+elif [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_OPENCL_DIR/libOCLc.${COMPAT_PLATFORM}.so" ]; then
+    COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/libOCLc.${COMPAT_PLATFORM}.so"
+elif [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_OPENCL_DIR/$COMPAT_PLATFORM/libOCLc.64.so" ]; then
+    COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/$COMPAT_PLATFORM/libOCLc.64.so"
+fi
+
 ARCSOFT_SO="/system/lib64/libsuperresolution.arcsoft.so"
 LLHDR_SO="/system/lib64/liblow_light_hdr.arcsoft.so"
 DUALCAM_REFOCUS_SO="/vendor/lib64/libdualcam_refocus_image.so"
@@ -104,7 +114,7 @@ for sp_hal_client in "$ARCSOFT_SO" "$LLHDR_SO" "$DUALCAM_REFOCUS_SO"; do
     fi
 done
 
-if [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_RUNTIME_64" ] && [ "$HAS_SPHAL_OPENCL_CLIENT" = true ]; then
+if [ -n "$COMPAT_RUNTIME_64" ] && [ -f "$COMPAT_RUNTIME_64" ] && [ "$HAS_SPHAL_OPENCL_CLIENT" = true ]; then
     mkdir -p "$MODPATH/system/vendor/lib64"
     cp "$COMPAT_RUNTIME_64" "$MODPATH/system/vendor/lib64/libOCLc.so"
     set_perm "$MODPATH/system/vendor/lib64/libOCLc.so" 0 0 0644 u:object_r:same_process_hal_file:s0
