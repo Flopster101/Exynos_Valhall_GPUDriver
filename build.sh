@@ -6,7 +6,7 @@ SOURCES="$SCRIPT_DIR/sources"
 OUTPUT="$SCRIPT_DIR/system"
 MODULE_PROP="$SCRIPT_DIR/module.prop"
 
-DRIVER_VER="r49p1"
+DRIVER_VER="${1:-${DRIVER_VER:-r49p1}}"
 
 BUILD_ITERATION="2"
 
@@ -17,9 +17,9 @@ if git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 VER_STRING="v1.0.0-${BUILD_ITERATION}"
-
 if [ -n "$GIT_HASH" ]; then
-    ZIP_NAME="Exynos_Valhall_GPUDriver-${DRIVER_VER}-${GIT_HASH}-${VER_STRING}.zip"
+    VER_STRING="${VER_STRING}-${GIT_HASH}"
+    ZIP_NAME="Exynos_Valhall_GPUDriver-${DRIVER_VER}-${GIT_HASH}-v1.0.0-${BUILD_ITERATION}.zip"
 else
     ZIP_NAME="Exynos_Valhall_GPUDriver-${DRIVER_VER}-${VER_STRING}.zip"
 fi
@@ -57,7 +57,7 @@ else
 fi
 
 # OpenCL compatibility is private to patched Samsung SPHAL clients. Normal
-# public libOpenCL.so clients must continue using the r49 runtime.
+# public libOpenCL.so clients must continue using the main driver runtime.
 echo "[2/6] Staging platform OpenCL compatibility payloads (optional)..."
 OCL_COMPAT_ROOT="$SOURCES/vendor/opencl_compat"
 OCL_COMPAT_PLATFORMS="exynos2100 exynos1280 exynos1380 exynos1330"
@@ -83,7 +83,7 @@ for platform in $OCL_COMPAT_PLATFORMS; do
 done
 
 if [ "$OCL_COMPAT_COUNT" -gt 0 ]; then
-    echo "  Private runtime only; public OpenCL remains r49"
+    echo "  Private runtime only; public OpenCL remains $DRIVER_VER"
 else
     echo "  No platform compatibility runtime supplied; OpenCL patches disabled"
 fi
@@ -140,9 +140,16 @@ else
     echo "  No shim found -- module will use stock vulkan.mali.so stub"
 fi
 
-# Update module.prop version
+# Update module.prop version and metadata
 sed -i "s/^version=.*/version=$VER_STRING/" "$MODULE_PROP"
 sed -i "s/^versionCode=.*/versionCode=${BUILD_ITERATION}/" "$MODULE_PROP"
+sed -i "s/^name=.*/name=Exynos Valhall GPU Driver \[$DRIVER_VER\] (1280 \/ 2100)/" "$MODULE_PROP"
+if grep -q "^driverVersion=" "$MODULE_PROP"; then
+    sed -i "s/^driverVersion=.*/driverVersion=$DRIVER_VER/" "$MODULE_PROP"
+else
+    echo "driverVersion=$DRIVER_VER" >> "$MODULE_PROP"
+fi
+sed -i -E "s/(Updated Mali GPU driver \()[^)]*(\))/\1$DRIVER_VER\2/" "$MODULE_PROP"
 
 # Assemble module
 echo ""
@@ -160,6 +167,13 @@ cp -r "$SCRIPT_DIR/META-INF" "$TEMP_DIR/"
 
 # Copy LICENSE if present
 [ -f "$SCRIPT_DIR/LICENSE" ] && cp "$SCRIPT_DIR/LICENSE" "$TEMP_DIR/"
+
+# Copy optional NOTICE from blob sources if provided
+if [ -f "$SOURCES/vendor/mali/NOTICE" ]; then
+    cp "$SOURCES/vendor/mali/NOTICE" "$TEMP_DIR/"
+elif [ -f "$SOURCES/NOTICE" ]; then
+    cp "$SOURCES/NOTICE" "$TEMP_DIR/"
+fi
 
 cd "$TEMP_DIR"
 rm -f "$SCRIPT_DIR/$ZIP_NAME"

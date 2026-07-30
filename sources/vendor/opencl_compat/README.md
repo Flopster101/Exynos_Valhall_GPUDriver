@@ -1,6 +1,6 @@
 # Platform OpenCL Compatibility Runtimes
 
-The r49 EGL/Vulkan DDK can stay shared across supported Valhall devices, but
+The main EGL/Vulkan DDK can stay shared across supported Valhall devices, but
 OpenCL compatibility must match the stock DDK family for each platform.
 
 Place unmodified OpenCL libraries in the platform directory below. Both files
@@ -17,12 +17,13 @@ Required per enabled platform: `libOpenCL.64.so`.
 
 An optional `libOpenCL.32.so` may be retained here for future 32-bit direct
 SPHAL clients, but it is not packaged or mounted today. Public 32-bit and
-64-bit `libOpenCL.so` calls remain on r49.
+64-bit `libOpenCL.so` calls remain on the main driver release.
 
 If a platform has no 64-bit runtime, its camera SPHAL patches are disabled.
-The installer leaves r49 OpenCL untouched for that platform.
+The installer leaves the main driver OpenCL untouched for that platform.
 
 The build changes the staged 64-bit runtime's SONAME to `libOCLc.so`. Only the
 patched SPHAL clients load this private file, so normal OpenCL users continue
-to use r49 and the module carries one 64-bit compatibility runtime per enabled
+to use the main driver release and the module carries one 64-bit compatibility runtime per enabled
 platform.
+

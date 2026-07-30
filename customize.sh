@@ -2,6 +2,8 @@
 
 SOC=$(getprop ro.soc.model)
 MODVER=$(grep_prop version $MODPATH/module.prop)
+DRIVER_VER=$(grep_prop driverVersion $MODPATH/module.prop)
+[ -z "$DRIVER_VER" ] && DRIVER_VER="GPU Driver"
 CHIP=$(getprop ro.hardware.chipname)
 PLATFORM=$(getprop ro.board.platform)
 
@@ -73,7 +75,7 @@ check_conflicting_modules() {
 
 ui_print " "
 ui_print " Version: $MODVER"
-ui_print " Exynos Valhall GPU Driver - r49p1"
+ui_print " Exynos Valhall GPU Driver - $DRIVER_VER"
 ui_print " SoC: $SOC_NAME ($GPU_NAME)"
 ui_print " "
 
@@ -109,9 +111,9 @@ if [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_RUNTIME_64" ] && [ "$HAS_SPHAL_OPE
     ui_print " - $SOC_NAME private OpenCL compatibility runtime"
     COMPAT_OPENCL_READY=true
 elif [ "$HAS_SPHAL_OPENCL_CLIENT" = false ]; then
-    ui_print " - No Samsung SPHAL OpenCL clients; keeping r49 OpenCL"
+    ui_print " - No Samsung SPHAL OpenCL clients; keeping $DRIVER_VER OpenCL"
 else
-    ui_print " - No $SOC_NAME OpenCL compatibility runtime; keeping r49 OpenCL"
+    ui_print " - No $SOC_NAME OpenCL compatibility runtime; keeping $DRIVER_VER OpenCL"
 fi
 
 # The selected payload is now staged below vendor. Do not retain unused
@@ -120,7 +122,7 @@ rm -rf "$MODPATH/compat_opencl"
 
 # Direct OpenCL consumers bypass the public dispatcher by opening
 # libOpenCL.so through the SPHAL namespace. NoMount cannot redirect that name
-# because the stock symlink resolves to r49 before lookup. Patch only the
+# because the stock symlink resolves to the driver blob before lookup. Patch only the
 # verified loader argument in known matching binaries to libOCLc.so. These
 # clients are optional: some supported devices do not ship every library.
 patch_sphal_opencl_loader() {
@@ -175,7 +177,7 @@ fi
 
 # Copy blob to root lib paths (replaces stock symlinks so NoMount can intercept).
 # The optional OpenCL payload is already a regular file and must not be changed
-# here: its public shim dispatches 64-bit OpenCL calls into private r38/r32.
+# here: its public shim dispatches 64-bit OpenCL calls into private platform runtimes.
 if [ -f "$MODPATH/system/vendor/lib64/egl/libGLES_mali.so" ]; then
     cp "$MODPATH/system/vendor/lib64/egl/libGLES_mali.so" "$MODPATH/system/vendor/lib64/libGLES_mali.so"
 fi
