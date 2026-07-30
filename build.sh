@@ -144,17 +144,6 @@ else
     echo "  No shim found -- module will use stock vulkan.mali.so stub"
 fi
 
-# Update module.prop version and metadata
-sed -i "s/^version=.*/version=$VER_STRING/" "$MODULE_PROP"
-sed -i "s/^versionCode=.*/versionCode=${BUILD_ITERATION}/" "$MODULE_PROP"
-sed -i "s/^name=.*/name=Exynos Valhall GPU Driver \[$DRIVER_VER\] (1280 \/ 2100)/" "$MODULE_PROP"
-if grep -q "^driverVersion=" "$MODULE_PROP"; then
-    sed -i "s/^driverVersion=.*/driverVersion=$DRIVER_VER/" "$MODULE_PROP"
-else
-    echo "driverVersion=$DRIVER_VER" >> "$MODULE_PROP"
-fi
-sed -i -E "s/(Updated Mali GPU driver \()[^)]*(\))/\1$DRIVER_VER\2/" "$MODULE_PROP"
-
 # Assemble module
 echo ""
 echo "Assembling module"
@@ -165,7 +154,20 @@ cp -r "$OUTPUT/vendor"/* "$STAGING_VENDOR/"
 if [ -n "$(find "$OUTPUT/compat_opencl" -mindepth 1 -print -quit)" ]; then
     cp -r "$OUTPUT/compat_opencl" "$TEMP_DIR/"
 fi
-cp "$SCRIPT_DIR/module.prop" "$TEMP_DIR/"
+
+# Generate build-time module.prop in staging directory from template
+STAGING_MODULE_PROP="$TEMP_DIR/module.prop"
+cp "$SCRIPT_DIR/module.prop" "$STAGING_MODULE_PROP"
+sed -i "s/^version=.*/version=$VER_STRING/" "$STAGING_MODULE_PROP"
+sed -i "s/^versionCode=.*/versionCode=${BUILD_ITERATION}/" "$STAGING_MODULE_PROP"
+sed -i "s/^name=.*/name=Exynos Valhall GPU Driver \[$DRIVER_VER\] (1280 \/ 2100)/" "$STAGING_MODULE_PROP"
+sed -i "s/Updated Mali GPU driver/Updated Mali GPU driver ($DRIVER_VER)/" "$STAGING_MODULE_PROP"
+if grep -q "^driverVersion=" "$STAGING_MODULE_PROP"; then
+    sed -i "s/^driverVersion=.*/driverVersion=$DRIVER_VER/" "$STAGING_MODULE_PROP"
+else
+    echo "driverVersion=$DRIVER_VER" >> "$STAGING_MODULE_PROP"
+fi
+
 cp "$SCRIPT_DIR/customize.sh" "$TEMP_DIR/"
 cp -r "$SCRIPT_DIR/META-INF" "$TEMP_DIR/"
 
