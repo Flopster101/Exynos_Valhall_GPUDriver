@@ -102,26 +102,13 @@ elif [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_OPENCL_DIR/$COMPAT_PLATFORM/libO
     COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/$COMPAT_PLATFORM/libOCLc.64.so"
 fi
 
-ARCSOFT_SO="/system/lib64/libsuperresolution.arcsoft.so"
-LLHDR_SO="/system/lib64/liblow_light_hdr.arcsoft.so"
-DUALCAM_REFOCUS_SO="/vendor/lib64/libdualcam_refocus_image.so"
-HAS_SPHAL_OPENCL_CLIENT=false
-
-for sp_hal_client in "$ARCSOFT_SO" "$LLHDR_SO" "$DUALCAM_REFOCUS_SO"; do
-    if [ -f "$sp_hal_client" ]; then
-        HAS_SPHAL_OPENCL_CLIENT=true
-        break
-    fi
-done
-
-if [ -n "$COMPAT_RUNTIME_64" ] && [ -f "$COMPAT_RUNTIME_64" ] && [ "$HAS_SPHAL_OPENCL_CLIENT" = true ]; then
+# Stage the private OpenCL compatibility runtime if available for this SoC.
+if [ -n "$COMPAT_RUNTIME_64" ] && [ -f "$COMPAT_RUNTIME_64" ]; then
     mkdir -p "$MODPATH/system/vendor/lib64"
     cp "$COMPAT_RUNTIME_64" "$MODPATH/system/vendor/lib64/libOCLc.so"
     set_perm "$MODPATH/system/vendor/lib64/libOCLc.so" 0 0 0644 u:object_r:same_process_hal_file:s0
     ui_print " - $SOC_NAME private OpenCL compatibility runtime"
     COMPAT_OPENCL_READY=true
-elif [ "$HAS_SPHAL_OPENCL_CLIENT" = false ]; then
-    ui_print " - No Samsung SPHAL OpenCL clients; keeping $DRIVER_VER OpenCL"
 else
     ui_print " - No $SOC_NAME OpenCL compatibility runtime; keeping $DRIVER_VER OpenCL"
 fi
@@ -130,57 +117,276 @@ fi
 # platform runtimes in the installed module.
 rm -rf "$MODPATH/compat_opencl"
 
-# Direct OpenCL consumers bypass the public dispatcher by opening
-# libOpenCL.so through the SPHAL namespace. NoMount cannot redirect that name
-# because the stock symlink resolves to the driver blob before lookup. Patch only the
-# verified loader argument in known matching binaries to libOCLc.so. These
-# clients are optional: some supported devices do not ship every library.
-patch_sphal_opencl_loader() {
-    local label="$1"
-    local source_file="$2"
-    local module_file="$3"
-    local expected_sha256="$4"
-    local offset="$5"
-    local selabel="$6"
-
-    if [ ! -f "$source_file" ]; then
-        ui_print " - Skipping $label SPHAL patch (library not shipped)"
-        return 0
+# Busybox tools ($BB_BIN); installer PATH may use toybox instead.
+# Never grep -b: busybox grep has no byte-offset flag.
+BB_BIN=""
+for _bb_cand in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
+    if [ -x "$_bb_cand" ]; then
+        BB_BIN="$_bb_cand"
+        break
     fi
+done
+if [ -z "$BB_BIN" ] && command -v busybox >/dev/null 2>&1; then
+    BB_BIN="busybox"
+fi
+if [ -z "$BB_BIN" ]; then
+    ui_print " ! No busybox found; SPHAL patcher will use system tools (may fail)"
+fi
+# Slow fallback: od hex output -> match offsets (trailing 00 is the check).
+SPHAL_FIND_AWK='BEGIN { n=0; s=0; start=0; split("69 62 4f 70 65 6e 43 4c 2e 73 6f 00", w, " ") } { for (i = 1; i <= NF; i++) { b=$i; o=n; n++; if (s == 0) { if (b == "6c") { s=1; start=o } } else if (b == w[s]) { s++; if (s > 12) { print start; s=0 } } else if (b == "6c") { s=1; start=o } else { s=0 } } }'
 
-    actual_sha256=$(sha256sum "$source_file" | awk '{print $1}')
-    actual_loader=$(dd if="$source_file" bs=1 skip="$offset" count=13 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    if [ "$actual_sha256" != "$expected_sha256" ] && [ "$actual_loader" != "6c69624f434c632e736f000000" ] && [ "$actual_loader" != "6c69624f434c33382e736f0000" ]; then
-        ui_print " - Skipping $label SPHAL patch (unrecognised binary)"
-        return 0
-    fi
+# Fast locator: strings offsets -> file offsets (NUL re-checked by caller).
+SPHAL_OFFS_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=index(line, "libOpenCL.so")) > 0) { print base+p-1; line=substr(line, p+1); base+=p } }'
 
-    mkdir -p "$(dirname "$module_file")"
-    cp "$source_file" "$module_file"
-    printf 'libOCLc.so\0\0\0' | dd of="$module_file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
-    set_perm "$module_file" 0 0 0644 "$selabel"
-    if [ "$actual_sha256" = "$expected_sha256" ]; then
-        ui_print " - Patched $label SPHAL OpenCL loader to private runtime"
+# New-driver DDK tag (build.sh stamps both from DRIVER_VER). Tag-patched
+# engines resolve their newest embedded kernels on it, natively.
+SPHAL_NEW_DDK="v1.r49p1"
+SPHAL_NEW_PREFIX="v1.r49p"
+
+# Proven redirect set (exact basenames): needs stock AND proven safe to
+# co-reside. Everything else old-locked gets tag-patched, never redirected.
+SPHAL_PROVEN="libsuperresolution.arcsoft.so liblow_light_hdr.arcsoft.so libdualcam_refocus_image.so"
+
+_sphal_proven() {
+    case " $SPHAL_PROVEN " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+# Old-locked here: whitelist present but no new-DDK entry (same-device proof
+# that a redirect is needed, e.g. A25 low_light_hdr is agnostic: skip it).
+_sphal_old_locked() {
+    $BB_BIN grep -q -a -F "v1.r" "$1" 2>/dev/null || return 1
+    $BB_BIN grep -q -a -F "$SPHAL_NEW_DDK" "$1" 2>/dev/null && return 1
+    $BB_BIN grep -q -a -F "$SPHAL_NEW_PREFIX" "$1" 2>/dev/null && return 1
+    return 0
+}
+
+# Best (newest) v1.r entry: prints "offset length" iff older than newscore.
+SPHAL_TAG_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); line=$0; base=o; while ((p=index(line, "v1.r")) > 0) { fo=base+p-1; rest=substr(line, p+4); maj=""; k=1; while (substr(rest,k,1) ~ /[0-9]/) { maj=maj substr(rest,k,1); k++ } if (maj != "" && substr(rest,k,1) == "p") { min=-1; k++; if (substr(rest,k,1) ~ /[0-9]/) { if (substr(rest,k+1,1) ~ /[0-9]/) { line=substr(line, p+1); base+=p; continue } min=substr(rest,k,1)+0; k++ } elen=4+length(maj)+1; if (min >= 0) elen++; score=(maj+0)*10+(min+1); if (score > best) { best=score; boff=fo; blen=elen } } line=substr(line, p+1); base+=p } } END { if (best != "" && best < newscore) print boff, blen }'
+
+# Retargets the newest whitelist entry to the new DDK (same bytes, in place).
+# Worst case is a graceful skip, same as native; never redirects, never wedges.
+# $4 = tag manifest file (appended on success, for update-install carry).
+_patch_sphal_tag() {
+    local src="$1" dst="$2" selabel="$3" manifest="$4"
+    local name best off len rep _b _nmaj _nmin _rest _ns
+    name="$(basename "$src")"
+    [ "$SPHAL_USE_STRINGS" = yes ] || return 1
+    _rest="${SPHAL_NEW_DDK#v1.r}"
+    _nmaj="${_rest%%p*}"
+    _rest="${_rest#*p}"
+    case "$_rest" in ""|*[!0-9]*) _nmin=-1 ;; *) _nmin="$_rest" ;; esac
+    _ns=$((_nmaj * 10 + _nmin + 1))
+    best=$(strings -a -t d "$src" 2>/dev/null | $BB_BIN grep -F "v1.r" \
+        | $BB_BIN awk -v newscore="$_ns" "$SPHAL_TAG_AWK" || true)
+    [ -n "$best" ] || return 1
+    off="${best%% *}"
+    len="${best##* }"
+    if [ "$len" = 7 ] && [ "${#SPHAL_NEW_PREFIX}" = 7 ]; then
+        rep="$SPHAL_NEW_PREFIX"
+    elif [ "$len" = 8 ] && [ "${#SPHAL_NEW_DDK}" = 8 ]; then
+        rep="$SPHAL_NEW_DDK"
     else
-        ui_print " - Reused existing $label SPHAL OpenCL override"
+        return 1
+    fi
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+    _b=$($BB_BIN dd if="$dst" bs=1 skip=$((off + len)) count=1 2>/dev/null \
+        | $BB_BIN od -t x1 | $BB_BIN awk 'NR==1{print $2}')
+    if [ "$_b" != "00" ]; then rm -f "$dst"; return 1; fi
+    printf '%s' "$rep" | $BB_BIN dd of="$dst" bs=1 seek="$off" conv=notrunc 2>/dev/null
+    set_perm "$dst" 0 0 0644 "$selabel"
+    ui_print " - Tagged $name"
+    echo "$name" >> "$manifest" 2>/dev/null
+    return 0
+}
+
+# Set to yes by the scan probe when `strings -a -t d` works end to end.
+SPHAL_USE_STRINGS=no
+
+# Rewrites "libOpenCL.so\0" -> "libOCLc.so\0\0\0" in place (same 13 bytes).
+patch_sphal_binary() {
+    local src="$1" dst="$2" selabel="$3"
+    local name offsets count offset _runs _cands _o _b
+    name="$(basename "$src")"
+
+    [ ! -f "$src" ] && return 0
+
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+
+    count=0
+    if [ "$SPHAL_USE_STRINGS" = yes ]; then
+        # Fast path: strings lists candidates, 1-byte dd checks NUL.
+        _runs=$(strings -a -t d "$dst" 2>/dev/null | $BB_BIN grep -F "libOpenCL.so" || true)
+        if [ -n "$_runs" ]; then
+            _cands=$(printf '%s\n' "$_runs" | $BB_BIN awk "$SPHAL_OFFS_AWK" || true)
+            for _o in $_cands; do
+                _b=$($BB_BIN dd if="$dst" bs=1 skip=$((_o + 12)) count=1 2>/dev/null \
+                    | $BB_BIN od -t x1 | $BB_BIN awk 'NR==1{print $2}')
+                if [ "$_b" = "00" ]; then
+                    $BB_BIN printf 'libOCLc.so\000\000\000' | $BB_BIN dd of="$dst" bs=1 seek="$_o" \
+                                                         conv=notrunc 2>/dev/null
+                    count=$((count + 1))
+                fi
+            done
+        fi
+    else
+        # Fallback: od+awk finds offsets (slow on big libs, always works).
+        offsets=$($BB_BIN od -A n -t x1 -v "$dst" 2>/dev/null | $BB_BIN awk "$SPHAL_FIND_AWK" || true)
+        for offset in $offsets; do
+            # \000 octal: portable across printf builtins (bare \0 is not).
+            $BB_BIN printf 'libOCLc.so\000\000\000' | $BB_BIN dd of="$dst" bs=1 seek="$offset" \
+                                         conv=notrunc 2>/dev/null
+            count=$((count + 1))
+        done
+    fi
+
+    if [ "$count" -gt 0 ]; then
+        set_perm "$dst" 0 0 0644 "$selabel"
+        ui_print " - Patched $name"
+    else
+        rm -f "$dst"
     fi
 }
 
+# Redirects .so files needing the compat OpenCL runtime; skips drivers.
+scan_and_patch_dir() {
+    local device_dir="$1" module_dir="$2" selabel="$3"
+    local src name scanned matched patched
+
+    [ ! -d "$device_dir" ] && { ui_print " ! SPHAL scan dir missing: $device_dir"; return 0; }
+
+    # Probe strings support; else use the od+awk fallback.
+    SPHAL_USE_STRINGS=no
+    if command -v strings >/dev/null 2>&1; then
+        mkdir -p "$module_dir"
+        printf 'xlibOpenCL.so\000y' > "$module_dir/.sphal_probe" 2>/dev/null
+        if [ -f "$module_dir/.sphal_probe" ] \
+           && strings -a -t d "$module_dir/.sphal_probe" 2>/dev/null \
+              | $BB_BIN grep -q -F "libOpenCL.so"; then
+            SPHAL_USE_STRINGS=yes
+        fi
+        rm -f "$module_dir/.sphal_probe"
+    fi
+
+    # ONE grep (-f patterns; -e/-- are broken here) prefilters the dir.
+    scanned=0
+    matched=0
+    patched=0
+    mkdir -p "$module_dir"
+    _spf="$module_dir/.sphal_patterns"
+    printf 'libOpenCL.so\nlibOCLc.so\n' > "$_spf" 2>/dev/null
+    candidates=$($BB_BIN grep -l -a -F -s -f "$_spf" "$device_dir"/lib*.so 2>/dev/null || true)
+    rm -f "$_spf"
+    if [ -z "$candidates" ]; then
+        for src in "$device_dir"/lib*.so; do
+            [ -f "$src" ] || continue
+            name="$(basename "$src")"
+            case "$name" in
+                libGLES_mali.so|libOpenCL.so|libOCLc.so|libMali.so) continue ;;
+            esac
+            scanned=$((scanned + 1))
+            if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
+                matched=$((matched + 1))
+                if _sphal_proven "$name" && _sphal_old_locked "$src"; then
+                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
+                elif _patch_sphal_tag "$src" "$module_dir/$name" "$selabel" "$SPHAL_TAG_MANIFEST"; then
+                    patched=$((patched + 1))
+                fi
+            fi
+            # Not elif: a patched lib may still contain the substring.
+            # Carry also re-checks: stale overlays of now-native libs drop out.
+            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
+               && _sphal_proven "$name" && _sphal_old_locked "$src"; then
+                cp "$src" "$module_dir/$name"
+                set_perm "$module_dir/$name" 0 0 0644 "$selabel"
+                ui_print " - Carried forward $name"
+                patched=$((patched + 1))
+            fi
+            # Tagged carry: update installs read live (already-tagged) bytes.
+            if [ ! -f "$module_dir/$name" ]; then case " $SPHAL_OLD_TAGGED " in
+                *" $name "*)
+                    cp "$src" "$module_dir/$name"
+                    set_perm "$module_dir/$name" 0 0 0644 "$selabel"
+                    ui_print " - Carried tagged $name"
+                    echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
+                    patched=$((patched + 1)) ;;
+            esac; fi
+        done
+    else
+        _n=$(printf '%s' "$candidates" | $BB_BIN grep -c '^')
+        ui_print " - SPHAL: $_n candidate files, patching..."
+        _oldifs="$IFS"; IFS="
+";
+        for src in $candidates; do
+            IFS="$_oldifs"
+            case "$src" in *.so) ;; *) continue ;; esac
+            [ -f "$src" ] || continue
+            name="$(basename "$src")"
+            case "$name" in
+                libGLES_mali.so|libOpenCL.so|libOCLc.so|libMali.so) continue ;;
+            esac
+            scanned=$((scanned + 1))
+            if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
+                matched=$((matched + 1))
+                if _sphal_proven "$name" && _sphal_old_locked "$src"; then
+                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
+                elif _patch_sphal_tag "$src" "$module_dir/$name" "$selabel" "$SPHAL_TAG_MANIFEST"; then
+                    patched=$((patched + 1))
+                fi
+            fi
+            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
+               && _sphal_proven "$name" && _sphal_old_locked "$src"; then
+                cp "$src" "$module_dir/$name"
+                set_perm "$module_dir/$name" 0 0 0644 "$selabel"
+                ui_print " - Carried forward $name"
+                patched=$((patched + 1))
+            fi
+            if [ ! -f "$module_dir/$name" ]; then case " $SPHAL_OLD_TAGGED " in
+                *" $name "*)
+                    cp "$src" "$module_dir/$name"
+                    set_perm "$module_dir/$name" 0 0 0644 "$selabel"
+                    ui_print " - Carried tagged $name"
+                    echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
+                    patched=$((patched + 1)) ;;
+            esac; fi
+        done
+        IFS="$_oldifs"
+    fi
+    ui_print " - SPHAL scan: $scanned checked, $matched with refs, $patched patched/carried"
+}
+
 if [ "$COMPAT_OPENCL_READY" = true ]; then
-    ARCSOFT_MOD_SO="$MODPATH/system/lib64/libsuperresolution.arcsoft.so"
-    ARCSOFT_SHA256="b0c6dbb80ef29d79527982bfe3747d0646717625849fa5c6024068746afacff3"
-    ARCSOFT_OFFSET=287457
-    patch_sphal_opencl_loader "ArcSoft" "$ARCSOFT_SO" "$ARCSOFT_MOD_SO" "$ARCSOFT_SHA256" "$ARCSOFT_OFFSET" "u:object_r:system_file:s0"
+    ui_print " - Scanning for SPHAL OpenCL clients..."
+    # Tag manifest (this install) + previously tagged (update installs).
+    SPHAL_TAG_MANIFEST="$MODPATH/.tagged_list"
+    rm -f "$SPHAL_TAG_MANIFEST"
+    SPHAL_OLD_TAGGED=""
+    _mid=$(grep_prop id "$MODPATH/module.prop" 2>/dev/null)
+    for _rt in /data/adb/modules /data/adb/ksu/modules /data/adb/ap/modules; do
+        if [ -n "$_mid" ] && [ -f "$_rt/$_mid/.tagged_list" ]; then
+            SPHAL_OLD_TAGGED="$SPHAL_OLD_TAGGED $(cat "$_rt/$_mid/.tagged_list" 2>/dev/null)"
+        fi
+    done
 
-    LLHDR_MOD_SO="$MODPATH/system/lib64/liblow_light_hdr.arcsoft.so"
-    LLHDR_SHA256="90ad0c013698eaebccac5412ecaf9abea0c485f08a033aa002b51219c068cd37"
-    LLHDR_OFFSET=138534
-    patch_sphal_opencl_loader "LLHDR" "$LLHDR_SO" "$LLHDR_MOD_SO" "$LLHDR_SHA256" "$LLHDR_OFFSET" "u:object_r:system_file:s0"
-
-    DUALCAM_REFOCUS_MOD_SO="$MODPATH/system/vendor/lib64/libdualcam_refocus_image.so"
-    DUALCAM_REFOCUS_SHA256="035c1e78e2d3d6d73de3926290db1c505b7c8004e3d237d3477ec6c4dcca5748"
-    DUALCAM_REFOCUS_OFFSET=251355
-    patch_sphal_opencl_loader "DualCam refocus" "$DUALCAM_REFOCUS_SO" "$DUALCAM_REFOCUS_MOD_SO" "$DUALCAM_REFOCUS_SHA256" "$DUALCAM_REFOCUS_OFFSET" "u:object_r:same_process_hal_file:s0"
+    # System libraries (camera post-processing, vision, ArcSoft, etc.)
+    scan_and_patch_dir "/system/lib64" \
+                       "$MODPATH/system/lib64" \
+                       "u:object_r:system_file:s0"
+    # Vendor libraries (dualcam refocus/bokeh, night, VDIS, etc.). The stock
+    # libOpenCL.so symlinks resolve to the replaced r49 blob, so these need
+    # the same redirection as the system clients.
+    scan_and_patch_dir "/vendor/lib64" \
+                       "$MODPATH/system/vendor/lib64" \
+                       "u:object_r:same_process_hal_file:s0"
+    # Fix perms for dirs created after the early set_perm_recursive.
+    [ -d "$MODPATH/system/lib64" ] && set_perm_recursive $MODPATH/system/lib64 0 0 0755 0644 u:object_r:system_file:s0
+    [ -d "$MODPATH/system/vendor/lib64" ] && set_perm_recursive $MODPATH/system/vendor/lib64 0 0 0755 0644 u:object_r:same_process_hal_file:s0
 else
     ui_print " - Camera SPHAL OpenCL patches disabled"
 fi
