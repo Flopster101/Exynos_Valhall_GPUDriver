@@ -172,6 +172,11 @@ else
 fi
 
 cp "$SCRIPT_DIR/customize.sh" "$TEMP_DIR/"
+# Stamp the new-driver DDK tag for tag-patching (derived strings stay native).
+SPHAL_STAMP_DDK="v1.${DRIVER_VER}"
+SPHAL_STAMP_PREFIX="$(printf '%s' "$SPHAL_STAMP_DDK" | sed 's/[0-9][0-9]*$//')"
+sed -i "s/^SPHAL_NEW_DDK=.*/SPHAL_NEW_DDK=\"$SPHAL_STAMP_DDK\"/" "$TEMP_DIR/customize.sh"
+sed -i "s/^SPHAL_NEW_PREFIX=.*/SPHAL_NEW_PREFIX=\"$SPHAL_STAMP_PREFIX\"/" "$TEMP_DIR/customize.sh"
 cp -r "$SCRIPT_DIR/META-INF" "$TEMP_DIR/"
 
 # Copy LICENSE if present
