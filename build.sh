@@ -8,7 +8,7 @@ MODULE_PROP="$SCRIPT_DIR/module.prop"
 
 DRIVER_VER="${1:-${DRIVER_VER:-r49p1}}"
 
-BUILD_ITERATION="4"
+BUILD_ITERATION="5"
 
 # Get git hash if available
 GIT_HASH=""
