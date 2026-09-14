@@ -137,6 +137,7 @@ SPHAL_FIND_AWK='BEGIN { n=0; s=0; start=0; split("69 62 4f 70 65 6e 43 4c 2e 73 
 
 # Fast locator: strings offsets -> file offsets (NUL re-checked by caller).
 SPHAL_OFFS_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=index(line, "libOpenCL.so")) > 0) { print base+p-1; line=substr(line, p+1); base+=p } }'
+SPHAL_OFFS2_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=index(line, "libGLES_mali.so")) > 0) { print base+p-1; line=substr(line, p+1); base+=p } }'
 
 # New-driver DDK tag (build.sh stamps both from DRIVER_VER). Tag-patched
 # engines resolve their newest embedded kernels on it, natively.
@@ -146,6 +147,15 @@ SPHAL_NEW_PREFIX="v1.r49p"
 # Proven redirect set (exact basenames): needs stock AND proven safe to
 # co-reside. Everything else old-locked gets tag-patched, never redirected.
 SPHAL_PROVEN="libsuperresolution.arcsoft.so liblow_light_hdr.arcsoft.so libdualcam_refocus_image.so"
+
+# Snap has no whitelist; armnn needs the stock compiler.
+SPHAL_SNAP="libsnap_compute.so libsnap_compute_secure.so"
+_sphal_snap() {
+    case " $SPHAL_SNAP " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
 
 _sphal_proven() {
     case " $SPHAL_PROVEN " in
@@ -232,6 +242,22 @@ patch_sphal_binary() {
                     count=$((count + 1))
                 fi
             done
+            # Snap fallback name: same 16 bytes, 5 pad NULs.
+            if _sphal_snap "$name"; then
+                _runs=$(strings -a -t d "$dst" 2>/dev/null | $BB_BIN grep -F "libGLES_mali.so" || true)
+                if [ -n "$_runs" ]; then
+                    _cands=$(printf '%s\n' "$_runs" | $BB_BIN awk "$SPHAL_OFFS2_AWK" || true)
+                    for _o in $_cands; do
+                        _b=$($BB_BIN dd if="$dst" bs=1 skip=$((_o + 15)) count=1 2>/dev/null \
+                            | $BB_BIN od -t x1 | $BB_BIN awk 'NR==1{print $2}')
+                        if [ "$_b" = "00" ]; then
+                            $BB_BIN printf 'libOCLc.so\000\000\000\000\000\000' | $BB_BIN dd of="$dst" bs=1 seek="$_o" \
+                                                                 conv=notrunc 2>/dev/null
+                            count=$((count + 1))
+                        fi
+                    done
+                fi
+            fi
         fi
     else
         # Fallback: od+awk finds offsets (slow on big libs, always works).
@@ -291,7 +317,10 @@ scan_and_patch_dir() {
             scanned=$((scanned + 1))
             if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
                 matched=$((matched + 1))
-                if _sphal_proven "$name" && _sphal_old_locked "$src"; then
+                if _sphal_snap "$name"; then
+                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
+                elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
                 elif _patch_sphal_tag "$src" "$module_dir/$name" "$selabel" "$SPHAL_TAG_MANIFEST"; then
@@ -333,7 +362,10 @@ scan_and_patch_dir() {
             scanned=$((scanned + 1))
             if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
                 matched=$((matched + 1))
-                if _sphal_proven "$name" && _sphal_old_locked "$src"; then
+                if _sphal_snap "$name"; then
+                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
+                elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
                 elif _patch_sphal_tag "$src" "$module_dir/$name" "$selabel" "$SPHAL_TAG_MANIFEST"; then
@@ -367,6 +399,12 @@ if [ "$COMPAT_OPENCL_READY" = true ]; then
     SPHAL_TAG_MANIFEST="$MODPATH/.tagged_list"
     rm -f "$SPHAL_TAG_MANIFEST"
     SPHAL_OLD_TAGGED=""
+    # Stale snap JIT wedges processing; wipe once per DDK.
+    _sphal_ver="$(cat /data/vendor/snap/.sphal_ddk 2>/dev/null)"
+    if [ "$_sphal_ver" != "$SPHAL_NEW_DDK" ]; then
+        rm -f /data/vendor/snap/snap_gpu_kernel_64.bin /data/vendor/snap/snaplite_cache.bin /data/vendor/snap/*cache* 2>/dev/null
+        printf '%s' "$SPHAL_NEW_DDK" > /data/vendor/snap/.sphal_ddk 2>/dev/null
+    fi
     _mid=$(grep_prop id "$MODPATH/module.prop" 2>/dev/null)
     for _rt in /data/adb/modules /data/adb/ksu/modules /data/adb/ap/modules; do
         if [ -n "$_mid" ] && [ -f "$_rt/$_mid/.tagged_list" ]; then
