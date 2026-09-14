@@ -24,6 +24,11 @@ else
     ZIP_NAME="Exynos_Valhall_GPUDriver-${DRIVER_VER}-${VER_STRING}.zip"
 fi
 
+MODULE_ID="exynos_valhall_gpudriver"
+MODULE_NAME="Exynos Valhall GPU Driver [$DRIVER_VER] (1280 / 2100)"
+MODULE_AUTHOR="Flopster101"
+MODULE_DESC="Updated Mali GPU driver ($DRIVER_VER) for Exynos 1280 (Mali-G68) and Exynos 2100 (Mali-G78)."
+
 echo ""
 echo "Exynos Valhall GPU Driver — Build Script"
 echo " Driver: $DRIVER_VER"
@@ -161,15 +166,8 @@ fi
 # Generate build-time module.prop in staging directory from template
 STAGING_MODULE_PROP="$TEMP_DIR/module.prop"
 cp "$SCRIPT_DIR/module.prop" "$STAGING_MODULE_PROP"
-sed -i "s/^version=.*/version=$VER_STRING/" "$STAGING_MODULE_PROP"
-sed -i "s/^versionCode=.*/versionCode=${BUILD_ITERATION}/" "$STAGING_MODULE_PROP"
-sed -i "s/^name=.*/name=Exynos Valhall GPU Driver \[$DRIVER_VER\] (1280 \/ 2100)/" "$STAGING_MODULE_PROP"
-sed -i "s/Updated Mali GPU driver/Updated Mali GPU driver ($DRIVER_VER)/" "$STAGING_MODULE_PROP"
-if grep -q "^driverVersion=" "$STAGING_MODULE_PROP"; then
-    sed -i "s/^driverVersion=.*/driverVersion=$DRIVER_VER/" "$STAGING_MODULE_PROP"
-else
-    echo "driverVersion=$DRIVER_VER" >> "$STAGING_MODULE_PROP"
-fi
+sed -i "s|@ID@|$MODULE_ID|;s|@NAME@|$MODULE_NAME|;s|@VERSION_CODE@|$BUILD_ITERATION|;s|@VERSION@|$VER_STRING|;s|@AUTHOR@|$MODULE_AUTHOR|;s|@DESCRIPTION@|$MODULE_DESC|;s|@DRIVER_VERSION@|$DRIVER_VER|" "$STAGING_MODULE_PROP"
+grep -q "@[A-Z_]*@" "$STAGING_MODULE_PROP" && { echo "Error: unreplaced token in module.prop"; exit 1; }
 
 cp "$SCRIPT_DIR/customize.sh" "$TEMP_DIR/"
 # Stamp the new-driver DDK tag for tag-patching (derived strings stay native).
