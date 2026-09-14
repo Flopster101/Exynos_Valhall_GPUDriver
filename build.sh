@@ -138,6 +138,16 @@ if [ -d "$SUPPORT_32" ]; then
     done
 fi
 
+# Stable-C mapper shim + binder interposer (required).
+STABLEC_SHIM_DIR="$SOURCES/vendor/stablec_shim"
+if [ ! -f "$STABLEC_SHIM_DIR/mapper.mali.64.so" ] || [ ! -f "$STABLEC_SHIM_DIR/libbinder_ml.64.so" ]; then
+    echo "Error: stable-C shim not built. Run 'make' in $STABLEC_SHIM_DIR first."
+    exit 1
+fi
+mkdir -p "$OUTPUT/vendor/lib64/hw"
+cp "$STABLEC_SHIM_DIR/mapper.mali.64.so" "$OUTPUT/vendor/lib64/hw/mapper.mali.so"
+cp "$STABLEC_SHIM_DIR/libbinder_ml.64.so" "$OUTPUT/vendor/lib64/libbinder_ml.so"
+echo "  stable-C mapper shim + binder interposer installed"
 
 # These direct OpenCL clients hard-code the SPHAL library name. customize.sh
 # copies and patches only matching files from the target device at install
