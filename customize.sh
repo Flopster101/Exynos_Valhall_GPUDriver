@@ -143,6 +143,7 @@ SPHAL_OFFS2_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=ind
 # engines resolve their newest embedded kernels on it, natively.
 SPHAL_NEW_DDK="v1.r49p1"
 SPHAL_NEW_PREFIX="v1.r49p"
+SPHAL_DRIVER_BUILD=""
 
 # Proven redirect set (exact basenames): needs stock AND proven safe to
 # co-reside. Everything else old-locked gets tag-patched, never redirected.
@@ -399,11 +400,12 @@ if [ "$COMPAT_OPENCL_READY" = true ]; then
     SPHAL_TAG_MANIFEST="$MODPATH/.tagged_list"
     rm -f "$SPHAL_TAG_MANIFEST"
     SPHAL_OLD_TAGGED=""
-    # Stale snap JIT wedges processing; wipe once per DDK.
+    # Stale snap JIT wedges processing; wipe once per blob build.
+    [ -n "$SPHAL_DRIVER_BUILD" ] || SPHAL_DRIVER_BUILD="$SPHAL_NEW_DDK"
     _sphal_ver="$(cat /data/vendor/snap/.sphal_ddk 2>/dev/null)"
-    if [ "$_sphal_ver" != "$SPHAL_NEW_DDK" ]; then
+    if [ "$_sphal_ver" != "$SPHAL_DRIVER_BUILD" ]; then
         rm -f /data/vendor/snap/snap_gpu_kernel_64.bin /data/vendor/snap/snaplite_cache.bin /data/vendor/snap/*cache* 2>/dev/null
-        printf '%s' "$SPHAL_NEW_DDK" > /data/vendor/snap/.sphal_ddk 2>/dev/null
+        printf '%s' "$SPHAL_DRIVER_BUILD" > /data/vendor/snap/.sphal_ddk 2>/dev/null
     fi
     _mid=$(grep_prop id "$MODPATH/module.prop" 2>/dev/null)
     for _rt in /data/adb/modules /data/adb/ksu/modules /data/adb/ap/modules; do

@@ -211,6 +211,10 @@ SPHAL_STAMP_DDK="v1.${DRIVER_VER}"
 SPHAL_STAMP_PREFIX="$(printf '%s' "$SPHAL_STAMP_DDK" | sed 's/[0-9][0-9]*$//')"
 sed -i "s/^SPHAL_NEW_DDK=.*/SPHAL_NEW_DDK=\"$SPHAL_STAMP_DDK\"/" "$TEMP_DIR/customize.sh"
 sed -i "s/^SPHAL_NEW_PREFIX=.*/SPHAL_NEW_PREFIX=\"$SPHAL_STAMP_PREFIX\"/" "$TEMP_DIR/customize.sh"
+# Exact blob build (revisions share one DDK tag); JIT wipe keys on this.
+SPHAL_STAMP_BUILD="$(strings -a "$MALI_64" 2>/dev/null | grep -a -o -m1 'U:r[0-9][0-9]*p[0-9][A-Za-z0-9_.-]*' || true)"
+[ -n "$SPHAL_STAMP_BUILD" ] || SPHAL_STAMP_BUILD="$SPHAL_STAMP_DDK"
+sed -i "s/^SPHAL_DRIVER_BUILD=.*/SPHAL_DRIVER_BUILD=\"$SPHAL_STAMP_BUILD\"/" "$TEMP_DIR/customize.sh"
 cp -r "$SCRIPT_DIR/META-INF" "$TEMP_DIR/"
 
 # Copy LICENSE if present
