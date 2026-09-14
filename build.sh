@@ -6,9 +6,9 @@ SOURCES="$SCRIPT_DIR/sources"
 OUTPUT="$SCRIPT_DIR/system"
 MODULE_PROP="$SCRIPT_DIR/module.prop"
 
-DRIVER_VER="${1:-${DRIVER_VER:-r49p1}}"
+DRIVER_VER="${1:-${DRIVER_VER:-r54p1}}"
 
-BUILD_ITERATION="5"
+BUILD_ITERATION="0"
 
 # Get git hash if available
 GIT_HASH=""
@@ -48,6 +48,31 @@ echo "[1/6] Copying Mali blobs..."
 mkdir -p "$OUTPUT/vendor/lib64/egl" "$OUTPUT/vendor/lib/egl"
 cp "$MALI_64" "$OUTPUT/vendor/lib64/egl/libGLES_mali.so"
 echo "  64-bit: $(stat -c%s "$OUTPUT/vendor/lib64/egl/libGLES_mali.so") bytes"
+
+# Stable-C 64-bit DT_NEEDED to the bundled interposer.
+# 32-bit untouched.
+python3 - "$OUTPUT/vendor/lib64/egl/libGLES_mali.so" <<'EOF'
+import sys
+path = sys.argv[1]
+with open(path, 'rb') as f:
+    d = bytearray(f.read())
+
+old, new = b"libbinder_ndk.so", b"libbinder_ml.so"
+new = new + b"\0" * (len(old) - len(new))
+idxs = []
+i = 0
+while True:
+    i = d.find(old, i)
+    if i < 0:
+        break
+    idxs.append(i)
+    i += 1
+assert len(idxs) == 1, f"expected 1 DT_NEEDED, found {len(idxs)}"
+d[idxs[0]:idxs[0] + len(old)] = new
+print(f"  DT_NEEDED patched @ {hex(idxs[0])}")
+with open(path, 'wb') as f:
+    f.write(d)
+EOF
 
 if [ -f "$MALI_32" ]; then
     cp "$MALI_32" "$OUTPUT/vendor/lib/egl/libGLES_mali.so"
@@ -112,6 +137,7 @@ if [ -d "$SUPPORT_32" ]; then
         [ -f "$f" ] && cp "$f" "$OUTPUT/vendor/lib/" && echo "  32-bit: $(basename $f)"
     done
 fi
+
 
 # These direct OpenCL clients hard-code the SPHAL library name. customize.sh
 # copies and patches only matching files from the target device at install
