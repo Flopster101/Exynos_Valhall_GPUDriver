@@ -321,6 +321,7 @@ scan_and_patch_dir() {
                 if _sphal_snap "$name"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
+                    [ -f "$module_dir/$name" ] && echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
                 elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
@@ -335,6 +336,15 @@ scan_and_patch_dir() {
                 cp "$src" "$module_dir/$name"
                 set_perm "$module_dir/$name" 0 0 0644 "$selabel"
                 ui_print " - Carried forward $name"
+                patched=$((patched + 1))
+            fi
+            # Snap carry: already-redirected bytes persist updates.
+            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
+               && _sphal_snap "$name"; then
+                cp "$src" "$module_dir/$name"
+                set_perm "$module_dir/$name" 0 0 0644 "$selabel"
+                ui_print " - Carried forward $name"
+                echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
                 patched=$((patched + 1))
             fi
             # Tagged carry: update installs read live (already-tagged) bytes.
@@ -366,6 +376,7 @@ scan_and_patch_dir() {
                 if _sphal_snap "$name"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
+                    [ -f "$module_dir/$name" ] && echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
                 elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
@@ -378,6 +389,15 @@ scan_and_patch_dir() {
                 cp "$src" "$module_dir/$name"
                 set_perm "$module_dir/$name" 0 0 0644 "$selabel"
                 ui_print " - Carried forward $name"
+                patched=$((patched + 1))
+            fi
+            # Snap carry: already-redirected bytes persist updates.
+            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
+               && _sphal_snap "$name"; then
+                cp "$src" "$module_dir/$name"
+                set_perm "$module_dir/$name" 0 0 0644 "$selabel"
+                ui_print " - Carried forward $name"
+                echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
                 patched=$((patched + 1))
             fi
             if [ ! -f "$module_dir/$name" ]; then case " $SPHAL_OLD_TAGGED " in
