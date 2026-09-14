@@ -13,3 +13,9 @@
 !vendor/opencl_compat/exynos1380/.gitkeep
 !vendor/opencl_compat/exynos1330/
 !vendor/opencl_compat/exynos1330/.gitkeep
+!vendor/stablec_shim/
+!vendor/stablec_shim/.gitignore
+!vendor/stablec_shim/Makefile
+!vendor/stablec_shim/README.md
+!vendor/stablec_shim/src/
+!vendor/stablec_shim/src/*

@@ -1,0 +1,10 @@
+LIBBINDER_NDK {
+    global:
+        AStatus_isOk;
+        AStatus_delete;
+        AServiceManager_checkService;
+        AIBinder_decStrong;
+        AIBinder_associateClass;
+    local:
+        *;
+};

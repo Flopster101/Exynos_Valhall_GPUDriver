@@ -1,0 +1,6 @@
+{
+    global:
+        AIMapper_loadIMapper;
+    local:
+        *;
+};
