@@ -72,11 +72,14 @@ while True:
         break
     idxs.append(i)
     i += 1
-assert len(idxs) == 1, f"expected 1 DT_NEEDED, found {len(idxs)}"
-d[idxs[0]:idxs[0] + len(old)] = new
-print(f"  DT_NEEDED patched @ {hex(idxs[0])}")
-with open(path, 'wb') as f:
-    f.write(d)
+assert len(idxs) <= 1, f"expected 0-1 DT_NEEDED, found {len(idxs)}"
+if len(idxs) == 1:
+    d[idxs[0]:idxs[0] + len(old)] = new
+    print(f"  DT_NEEDED patched @ {hex(idxs[0])}")
+    with open(path, 'wb') as f:
+        f.write(d)
+else:
+    print("  DT_NEEDED already interposed, skipping")
 EOF
 
 if [ -f "$MALI_32" ]; then
