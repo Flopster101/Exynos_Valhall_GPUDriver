@@ -102,20 +102,13 @@ elif [ -n "$COMPAT_PLATFORM" ] && [ -f "$COMPAT_OPENCL_DIR/$COMPAT_PLATFORM/libO
     COMPAT_RUNTIME_64="$COMPAT_OPENCL_DIR/$COMPAT_PLATFORM/libOCLc.64.so"
 fi
 
-# Stage the private OpenCL compatibility runtime if available for this SoC.
+# Compatibility payload present? Actual staging happens after the SPHAL
+# scan: with no clients (e.g. AOSP), the runtime is not staged at all.
 if [ -n "$COMPAT_RUNTIME_64" ] && [ -f "$COMPAT_RUNTIME_64" ]; then
-    mkdir -p "$MODPATH/system/vendor/lib64"
-    cp "$COMPAT_RUNTIME_64" "$MODPATH/system/vendor/lib64/libOCLc.so"
-    set_perm "$MODPATH/system/vendor/lib64/libOCLc.so" 0 0 0644 u:object_r:same_process_hal_file:s0
-    ui_print " - $SOC_NAME private OpenCL compatibility runtime"
     COMPAT_OPENCL_READY=true
 else
     ui_print " - No $SOC_NAME OpenCL compatibility runtime; keeping $DRIVER_VER OpenCL"
 fi
-
-# The selected payload is now staged below vendor. Do not retain unused
-# platform runtimes in the installed module.
-rm -rf "$MODPATH/compat_opencl"
 
 # Busybox tools ($BB_BIN); installer PATH may use toybox instead.
 # Never grep -b: busybox grep has no byte-offset flag.
@@ -225,7 +218,8 @@ patch_sphal_binary() {
 
 scan_and_patch_dir() {
     local device_dir="$1" module_dir="$2" selabel="$3"
-    local src name scanned matched patched
+    local src name scanned matched
+    # patched is global: it feeds the runtime-staging decision below.
 
     [ ! -d "$device_dir" ] && { ui_print " ! SPHAL scan dir missing: $device_dir"; return 0; }
 
@@ -256,7 +250,7 @@ scan_and_patch_dir() {
             [ -f "$src" ] || continue
             name="$(basename "$src")"
             case "$name" in
-                libGLES_mali.so|libOpenCL.so|libOCLc.so|libMali.so) continue ;;
+                libGLES_mali.so|libOpenCL.so|libOCLc.so|libMali.so|libtensorflowlite_gpu_jni.so) continue ;;
             esac
             scanned=$((scanned + 1))
             if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
@@ -283,7 +277,7 @@ scan_and_patch_dir() {
             [ -f "$src" ] || continue
             name="$(basename "$src")"
             case "$name" in
-                libGLES_mali.so|libOpenCL.so|libOCLc.so|libMali.so) continue ;;
+                libGLES_mali.so|libOpenCL.so|libOCLc.so|libMali.so|libtensorflowlite_gpu_jni.so) continue ;;
             esac
             scanned=$((scanned + 1))
             if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
@@ -302,33 +296,49 @@ scan_and_patch_dir() {
         IFS="$_oldifs"
     fi
     ui_print " - SPHAL scan: $scanned checked, $matched with refs, $patched patched/carried"
+    SPHAL_PATCHED_TOTAL=$((SPHAL_PATCHED_TOTAL + patched))
 }
 
 if [ "$COMPAT_OPENCL_READY" = true ]; then
+    SPHAL_PATCHED_TOTAL=0
     ui_print " - Scanning for SPHAL OpenCL clients..."
-    # Stale snap JIT wedges processing; wipe once per blob build.
-    [ -n "$SPHAL_DRIVER_BUILD" ] || SPHAL_DRIVER_BUILD="$SPHAL_NEW_DDK"
-    _sphal_ver="$(cat /data/vendor/snap/.sphal_ddk 2>/dev/null)"
-    if [ "$_sphal_ver" != "$SPHAL_DRIVER_BUILD" ]; then
-        rm -f /data/vendor/snap/snap_gpu_kernel_64.bin /data/vendor/snap/snaplite_cache.bin /data/vendor/snap/*cache* 2>/dev/null
-        printf '%s' "$SPHAL_DRIVER_BUILD" > /data/vendor/snap/.sphal_ddk 2>/dev/null
-    fi
     # System libraries (camera post-processing, vision, ArcSoft, etc.)
     scan_and_patch_dir "/system/lib64" \
                        "$MODPATH/system/lib64" \
                        "u:object_r:system_file:s0"
     # Vendor libraries (dualcam refocus/bokeh, night, VDIS, etc.). The stock
-    # libOpenCL.so symlinks resolve to the replaced r49 blob, so these need
-    # the same redirection as the system clients.
+    # libOpenCL.so symlinks resolve to the replaced blob, so these need the
+    # same redirection as the system clients.
     scan_and_patch_dir "/vendor/lib64" \
                        "$MODPATH/system/vendor/lib64" \
                        "u:object_r:same_process_hal_file:s0"
+    if [ "$SPHAL_PATCHED_TOTAL" -gt 0 ]; then
+        mkdir -p "$MODPATH/system/vendor/lib64"
+        cp "$COMPAT_RUNTIME_64" "$MODPATH/system/vendor/lib64/libOCLc.so"
+        set_perm "$MODPATH/system/vendor/lib64/libOCLc.so" 0 0 0644 \
+                 u:object_r:same_process_hal_file:s0
+        ui_print " - $SOC_NAME private OpenCL compatibility runtime"
+        # Stale snap JIT wedges processing; wipe once per blob build.
+        [ -n "$SPHAL_DRIVER_BUILD" ] || SPHAL_DRIVER_BUILD="$SPHAL_NEW_DDK"
+        if [ -d /data/vendor/snap ]; then
+            _sphal_ver="$(cat /data/vendor/snap/.sphal_ddk 2>/dev/null)"
+            if [ "$_sphal_ver" != "$SPHAL_DRIVER_BUILD" ]; then
+                rm -f /data/vendor/snap/snap_gpu_kernel_64.bin \
+                      /data/vendor/snap/snaplite_cache.bin \
+                      /data/vendor/snap/*cache* 2>/dev/null
+                printf '%s' "$SPHAL_DRIVER_BUILD" > /data/vendor/snap/.sphal_ddk 2>/dev/null
+            fi
+        fi
+    else
+        ui_print " - No OpenCL clients; keeping $DRIVER_VER OpenCL native"
+    fi
     # Fix perms for dirs created after the early set_perm_recursive.
     [ -d "$MODPATH/system/lib64" ] && set_perm_recursive $MODPATH/system/lib64 0 0 0755 0644 u:object_r:system_file:s0
     [ -d "$MODPATH/system/vendor/lib64" ] && set_perm_recursive $MODPATH/system/vendor/lib64 0 0 0755 0644 u:object_r:same_process_hal_file:s0
 else
     ui_print " - Camera SPHAL OpenCL patches disabled"
 fi
+rm -rf "$MODPATH/compat_opencl"
 
 # Copy blob to root lib paths (replaces stock symlinks so NoMount can intercept).
 # The optional OpenCL payload is already a regular file and must not be changed
