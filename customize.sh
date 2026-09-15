@@ -141,13 +141,19 @@ SPHAL_OFFS2_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=ind
 
 # New-driver DDK tag (build.sh stamps both from DRIVER_VER). Tag-patched
 # engines resolve their newest embedded kernels on it, natively.
-SPHAL_NEW_DDK="v1.r49p1"
-SPHAL_NEW_PREFIX="v1.r49p"
+SPHAL_NEW_DDK="v1.r54p1"
+SPHAL_NEW_PREFIX="v1.r54p"
 SPHAL_DRIVER_BUILD=""
 
 # Proven redirect set (exact basenames): needs stock AND proven safe to
 # co-reside. Everything else old-locked gets tag-patched, never redirected.
 SPHAL_PROVEN="libsuperresolution.arcsoft.so liblow_light_hdr.arcsoft.so libdualcam_refocus_image.so"
+
+# Forced redirects, independent of whitelist state: this engine is
+# old-locked (whitelist and kernel variants top out at r44p1), so under
+# a r54 driver ARC_IE_Init fails and SIE stills save empty or crash the
+# provider. Route it to the stock runtime (libOCLc).
+SPHAL_FORCE="libimage_enhancement.arcsoft.so"
 
 # Snap has no whitelist; armnn needs the stock compiler.
 SPHAL_SNAP="libsnap_compute.so libsnap_compute_secure.so"
@@ -160,6 +166,13 @@ _sphal_snap() {
 
 _sphal_proven() {
     case " $SPHAL_PROVEN " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+_sphal_force() {
+    case " $SPHAL_FORCE " in
         *" $1 "*) return 0 ;;
     esac
     return 1
@@ -322,6 +335,9 @@ scan_and_patch_dir() {
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
                     [ -f "$module_dir/$name" ] && echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
+                elif _sphal_force "$name"; then
+                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
                 elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
@@ -332,7 +348,7 @@ scan_and_patch_dir() {
             # Not elif: a patched lib may still contain the substring.
             # Carry also re-checks: stale overlays of now-native libs drop out.
             if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
-               && _sphal_proven "$name" && _sphal_old_locked "$src"; then
+               && { _sphal_proven "$name" || _sphal_force "$name"; } && _sphal_old_locked "$src"; then
                 cp "$src" "$module_dir/$name"
                 set_perm "$module_dir/$name" 0 0 0644 "$selabel"
                 ui_print " - Carried forward $name"
@@ -377,6 +393,9 @@ scan_and_patch_dir() {
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
                     [ -f "$module_dir/$name" ] && echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
+                elif _sphal_force "$name"; then
+                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
                 elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
                     patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
                     [ -f "$module_dir/$name" ] && patched=$((patched + 1))
@@ -385,7 +404,7 @@ scan_and_patch_dir() {
                 fi
             fi
             if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
-               && _sphal_proven "$name" && _sphal_old_locked "$src"; then
+               && { _sphal_proven "$name" || _sphal_force "$name"; } && _sphal_old_locked "$src"; then
                 cp "$src" "$module_dir/$name"
                 set_perm "$module_dir/$name" 0 0 0644 "$selabel"
                 ui_print " - Carried forward $name"
