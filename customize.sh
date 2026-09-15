@@ -110,6 +110,40 @@ else
     ui_print " - No $SOC_NAME OpenCL compatibility runtime; keeping $DRIVER_VER OpenCL"
 fi
 
+# KMD (kbase) compatibility check
+# $DRIVER_VER userspace needs a same-era Mali KMD; older KMDs break
+# stuff. Warn-only: GL/HWUI still run on older KMDs usually.
+KMD_VER="$(cat /sys/module/mali_kbase/version 2>/dev/null)"
+KMD_VER="${KMD_VER%% \(*}"
+KMD_VER="${KMD_VER%"${KMD_VER##*[![:space:]]}"}"
+KMD_FLOPPY=no
+case "$(uname -r 2>/dev/null)" in
+    *Floppy*) KMD_FLOPPY=yes ;;
+esac
+if [ -z "$KMD_VER" ]; then
+    ui_print " ⚠️ Could not read /sys/module/mali_kbase/version!"
+else
+    KMD_OK=no
+    case "$DRIVER_VER" in
+        r54p1) case "$KMD_VER" in r5*p*)       KMD_OK=yes ;; esac ;;
+        r49p1) case "$KMD_VER" in r44p*|r49p1*) KMD_OK=yes ;; esac ;;
+        r38p1) case "$KMD_VER" in r38p*)       KMD_OK=yes ;; esac ;;
+    esac
+    if [ "$KMD_OK" = yes ]; then
+        ui_print " ✅ Detected Mali KMD: $KMD_VER"
+    else
+        ui_print " "
+        ui_print " ⚠️ Detected Mali KMD: $KMD_VER"
+        ui_print " ! Your kernel driver is outdated!"
+        if [ "$KMD_FLOPPY" = yes ]; then
+            ui_print " ! Fix: switch KMD via FloppyCompanion or a"
+            ui_print " ! MaliVersion patcher, then reboot."
+        else
+            ui_print " ! Fix: flash a kernel with a compatible Mali KMD."
+        fi
+        ui_print " "
+    fi
+fi
 # Busybox tools ($BB_BIN); installer PATH may use toybox instead.
 # Never grep -b: busybox grep has no byte-offset flag.
 BB_BIN=""
