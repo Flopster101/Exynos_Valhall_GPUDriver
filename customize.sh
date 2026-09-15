@@ -139,21 +139,10 @@ SPHAL_FIND_AWK='BEGIN { n=0; s=0; start=0; split("69 62 4f 70 65 6e 43 4c 2e 73 
 SPHAL_OFFS_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=index(line, "libOpenCL.so")) > 0) { print base+p-1; line=substr(line, p+1); base+=p } }'
 SPHAL_OFFS2_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); base=o; line=$0; while ((p=index(line, "libGLES_mali.so")) > 0) { print base+p-1; line=substr(line, p+1); base+=p } }'
 
-# New-driver DDK tag (build.sh stamps both from DRIVER_VER). Tag-patched
-# engines resolve their newest embedded kernels on it, natively.
+# New-driver DDK tag (build.sh stamps it from DRIVER_VER). Only the snap
+# JIT cache-wipe key derives from it.
 SPHAL_NEW_DDK="v1.r54p1"
-SPHAL_NEW_PREFIX="v1.r54p"
 SPHAL_DRIVER_BUILD=""
-
-# Proven redirect set (exact basenames): needs stock AND proven safe to
-# co-reside. Everything else old-locked gets tag-patched, never redirected.
-SPHAL_PROVEN="libsuperresolution.arcsoft.so liblow_light_hdr.arcsoft.so libdualcam_refocus_image.so"
-
-# Forced redirects, independent of whitelist state: this engine is
-# old-locked (whitelist and kernel variants top out at r44p1), so under
-# a r54 driver ARC_IE_Init fails and SIE stills save empty or crash the
-# provider. Route it to the stock runtime (libOCLc).
-SPHAL_FORCE="libimage_enhancement.arcsoft.so"
 
 # Snap has no whitelist; armnn needs the stock compiler.
 SPHAL_SNAP="libsnap_compute.so libsnap_compute_secure.so"
@@ -162,69 +151,6 @@ _sphal_snap() {
         *" $1 "*) return 0 ;;
     esac
     return 1
-}
-
-_sphal_proven() {
-    case " $SPHAL_PROVEN " in
-        *" $1 "*) return 0 ;;
-    esac
-    return 1
-}
-
-_sphal_force() {
-    case " $SPHAL_FORCE " in
-        *" $1 "*) return 0 ;;
-    esac
-    return 1
-}
-
-# Old-locked here: whitelist present but no new-DDK entry (same-device proof
-# that a redirect is needed, e.g. A25 low_light_hdr is agnostic: skip it).
-_sphal_old_locked() {
-    $BB_BIN grep -q -a -F "v1.r" "$1" 2>/dev/null || return 1
-    $BB_BIN grep -q -a -F "$SPHAL_NEW_DDK" "$1" 2>/dev/null && return 1
-    $BB_BIN grep -q -a -F "$SPHAL_NEW_PREFIX" "$1" 2>/dev/null && return 1
-    return 0
-}
-
-# Best (newest) v1.r entry: prints "offset length" iff older than newscore.
-SPHAL_TAG_AWK='{ o=$1+0; sub(/^ *[^ ]+ +/, ""); line=$0; base=o; while ((p=index(line, "v1.r")) > 0) { fo=base+p-1; rest=substr(line, p+4); maj=""; k=1; while (substr(rest,k,1) ~ /[0-9]/) { maj=maj substr(rest,k,1); k++ } if (maj != "" && substr(rest,k,1) == "p") { min=-1; k++; if (substr(rest,k,1) ~ /[0-9]/) { if (substr(rest,k+1,1) ~ /[0-9]/) { line=substr(line, p+1); base+=p; continue } min=substr(rest,k,1)+0; k++ } elen=4+length(maj)+1; if (min >= 0) elen++; score=(maj+0)*10+(min+1); if (score > best) { best=score; boff=fo; blen=elen } } line=substr(line, p+1); base+=p } } END { if (best != "" && best < newscore) print boff, blen }'
-
-# Retargets the newest whitelist entry to the new DDK (same bytes, in place).
-# Worst case is a graceful skip, same as native; never redirects, never wedges.
-# $4 = tag manifest file (appended on success, for update-install carry).
-_patch_sphal_tag() {
-    local src="$1" dst="$2" selabel="$3" manifest="$4"
-    local name best off len rep _b _nmaj _nmin _rest _ns
-    name="$(basename "$src")"
-    [ "$SPHAL_USE_STRINGS" = yes ] || return 1
-    _rest="${SPHAL_NEW_DDK#v1.r}"
-    _nmaj="${_rest%%p*}"
-    _rest="${_rest#*p}"
-    case "$_rest" in ""|*[!0-9]*) _nmin=-1 ;; *) _nmin="$_rest" ;; esac
-    _ns=$((_nmaj * 10 + _nmin + 1))
-    best=$(strings -a -t d "$src" 2>/dev/null | $BB_BIN grep -F "v1.r" \
-        | $BB_BIN awk -v newscore="$_ns" "$SPHAL_TAG_AWK" || true)
-    [ -n "$best" ] || return 1
-    off="${best%% *}"
-    len="${best##* }"
-    if [ "$len" = 7 ] && [ "${#SPHAL_NEW_PREFIX}" = 7 ]; then
-        rep="$SPHAL_NEW_PREFIX"
-    elif [ "$len" = 8 ] && [ "${#SPHAL_NEW_DDK}" = 8 ]; then
-        rep="$SPHAL_NEW_DDK"
-    else
-        return 1
-    fi
-    mkdir -p "$(dirname "$dst")"
-    cp "$src" "$dst"
-    _b=$($BB_BIN dd if="$dst" bs=1 skip=$((off + len)) count=1 2>/dev/null \
-        | $BB_BIN od -t x1 | $BB_BIN awk 'NR==1{print $2}')
-    if [ "$_b" != "00" ]; then rm -f "$dst"; return 1; fi
-    printf '%s' "$rep" | $BB_BIN dd of="$dst" bs=1 seek="$off" conv=notrunc 2>/dev/null
-    set_perm "$dst" 0 0 0644 "$selabel"
-    ui_print " - Tagged $name"
-    echo "$name" >> "$manifest" 2>/dev/null
-    return 0
 }
 
 # Set to yes by the scan probe when `strings -a -t d` works end to end.
@@ -292,7 +218,11 @@ patch_sphal_binary() {
     fi
 }
 
-# Redirects .so files needing the compat OpenCL runtime; skips drivers.
+# Every OpenCL client (camera post-processing, ArcSoft, snap) runs on the
+# stock compat runtime: these libs ship with the ROM and are built for it.
+# Whitelist tag-patching for the new driver was never needed and re-arms
+# the fail-closed path. Skips driver libs.
+
 scan_and_patch_dir() {
     local device_dir="$1" module_dir="$2" selabel="$3"
     local src name scanned matched patched
@@ -331,47 +261,16 @@ scan_and_patch_dir() {
             scanned=$((scanned + 1))
             if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
                 matched=$((matched + 1))
-                if _sphal_snap "$name"; then
-                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
-                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
-                    [ -f "$module_dir/$name" ] && echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
-                elif _sphal_force "$name"; then
-                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
-                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
-                elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
-                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
-                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
-                elif _patch_sphal_tag "$src" "$module_dir/$name" "$selabel" "$SPHAL_TAG_MANIFEST"; then
-                    patched=$((patched + 1))
-                fi
+                patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                [ -f "$module_dir/$name" ] && patched=$((patched + 1))
             fi
-            # Not elif: a patched lib may still contain the substring.
-            # Carry also re-checks: stale overlays of now-native libs drop out.
-            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
-               && { _sphal_proven "$name" || _sphal_force "$name"; } && _sphal_old_locked "$src"; then
+            # Carry forward already-redirected bytes across updates.
+            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null; then
                 cp "$src" "$module_dir/$name"
                 set_perm "$module_dir/$name" 0 0 0644 "$selabel"
                 ui_print " - Carried forward $name"
                 patched=$((patched + 1))
             fi
-            # Snap carry: already-redirected bytes persist updates.
-            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
-               && _sphal_snap "$name"; then
-                cp "$src" "$module_dir/$name"
-                set_perm "$module_dir/$name" 0 0 0644 "$selabel"
-                ui_print " - Carried forward $name"
-                echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
-                patched=$((patched + 1))
-            fi
-            # Tagged carry: update installs read live (already-tagged) bytes.
-            if [ ! -f "$module_dir/$name" ]; then case " $SPHAL_OLD_TAGGED " in
-                *" $name "*)
-                    cp "$src" "$module_dir/$name"
-                    set_perm "$module_dir/$name" 0 0 0644 "$selabel"
-                    ui_print " - Carried tagged $name"
-                    echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
-                    patched=$((patched + 1)) ;;
-            esac; fi
         done
     else
         _n=$(printf '%s' "$candidates" | $BB_BIN grep -c '^')
@@ -389,44 +288,16 @@ scan_and_patch_dir() {
             scanned=$((scanned + 1))
             if $BB_BIN grep -q -a -F "libOpenCL.so" "$src" 2>/dev/null; then
                 matched=$((matched + 1))
-                if _sphal_snap "$name"; then
-                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
-                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
-                    [ -f "$module_dir/$name" ] && echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
-                elif _sphal_force "$name"; then
-                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
-                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
-                elif _sphal_proven "$name" && _sphal_old_locked "$src"; then
-                    patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
-                    [ -f "$module_dir/$name" ] && patched=$((patched + 1))
-                elif _patch_sphal_tag "$src" "$module_dir/$name" "$selabel" "$SPHAL_TAG_MANIFEST"; then
-                    patched=$((patched + 1))
-                fi
+                patch_sphal_binary "$src" "$module_dir/$name" "$selabel"
+                [ -f "$module_dir/$name" ] && patched=$((patched + 1))
             fi
-            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
-               && { _sphal_proven "$name" || _sphal_force "$name"; } && _sphal_old_locked "$src"; then
+            # Carry forward already-redirected bytes across updates.
+            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null; then
                 cp "$src" "$module_dir/$name"
                 set_perm "$module_dir/$name" 0 0 0644 "$selabel"
                 ui_print " - Carried forward $name"
                 patched=$((patched + 1))
             fi
-            # Snap carry: already-redirected bytes persist updates.
-            if [ ! -f "$module_dir/$name" ] && $BB_BIN grep -q -a -F "libOCLc.so" "$src" 2>/dev/null \
-               && _sphal_snap "$name"; then
-                cp "$src" "$module_dir/$name"
-                set_perm "$module_dir/$name" 0 0 0644 "$selabel"
-                ui_print " - Carried forward $name"
-                echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
-                patched=$((patched + 1))
-            fi
-            if [ ! -f "$module_dir/$name" ]; then case " $SPHAL_OLD_TAGGED " in
-                *" $name "*)
-                    cp "$src" "$module_dir/$name"
-                    set_perm "$module_dir/$name" 0 0 0644 "$selabel"
-                    ui_print " - Carried tagged $name"
-                    echo "$name" >> "$SPHAL_TAG_MANIFEST" 2>/dev/null
-                    patched=$((patched + 1)) ;;
-            esac; fi
         done
         IFS="$_oldifs"
     fi
@@ -435,10 +306,6 @@ scan_and_patch_dir() {
 
 if [ "$COMPAT_OPENCL_READY" = true ]; then
     ui_print " - Scanning for SPHAL OpenCL clients..."
-    # Tag manifest (this install) + previously tagged (update installs).
-    SPHAL_TAG_MANIFEST="$MODPATH/.tagged_list"
-    rm -f "$SPHAL_TAG_MANIFEST"
-    SPHAL_OLD_TAGGED=""
     # Stale snap JIT wedges processing; wipe once per blob build.
     [ -n "$SPHAL_DRIVER_BUILD" ] || SPHAL_DRIVER_BUILD="$SPHAL_NEW_DDK"
     _sphal_ver="$(cat /data/vendor/snap/.sphal_ddk 2>/dev/null)"
@@ -446,13 +313,6 @@ if [ "$COMPAT_OPENCL_READY" = true ]; then
         rm -f /data/vendor/snap/snap_gpu_kernel_64.bin /data/vendor/snap/snaplite_cache.bin /data/vendor/snap/*cache* 2>/dev/null
         printf '%s' "$SPHAL_DRIVER_BUILD" > /data/vendor/snap/.sphal_ddk 2>/dev/null
     fi
-    _mid=$(grep_prop id "$MODPATH/module.prop" 2>/dev/null)
-    for _rt in /data/adb/modules /data/adb/ksu/modules /data/adb/ap/modules; do
-        if [ -n "$_mid" ] && [ -f "$_rt/$_mid/.tagged_list" ]; then
-            SPHAL_OLD_TAGGED="$SPHAL_OLD_TAGGED $(cat "$_rt/$_mid/.tagged_list" 2>/dev/null)"
-        fi
-    done
-
     # System libraries (camera post-processing, vision, ArcSoft, etc.)
     scan_and_patch_dir "/system/lib64" \
                        "$MODPATH/system/lib64" \
