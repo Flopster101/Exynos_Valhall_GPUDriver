@@ -662,17 +662,10 @@ static uint32_t plane_stride_bytes(const native_handle_t* h, uint32_t i) {
     if (bpp < 1) bpp = 4;
     return w * bpp;
 }
-/* Plane byte offset. Exynos handles with i == u32(plane+0x08) use per-plane
- * bases at +0x108: off = *(h+0x108+i*8) - *(h+0x108), signed (multi-fd YUV
- * yields negatives). Otherwise off = raw +0x58. */
+/* Plane byte offset: raw entry value (+0x108 holds producer-side
+ * mapping addresses, never offsets). */
 static uint64_t plane_parcel_offset(const native_handle_t* h, uint32_t i, bool is_exynos) {
-    /* 82-int handles carry per-fd mapping addresses at +0x108, not plane
-     * offsets; their entry offsets are already fd-relative. */
-    if (!stride_is_quad(h) && is_exynos && i == h_u32(h, PH_PLANE_ARR + i * 0x28 + 0x08)) {
-        int64_t a = (int64_t)h_u64(h, 0x108 + (size_t)i * 8);
-        int64_t b = (int64_t)h_u64(h, 0x108);
-        return (uint64_t)(a - b);
-    }
+    (void)is_exynos;
     return plane_offset(h, i);
 }
 /* Parcel samples: raw entry values, buffer dims as fallback. */
@@ -969,16 +962,17 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
         }
         case SMD_DATASPACE: {
             uint32_t ds = 0;
-            uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-            if (base) {
-                int32_t flag = 0;
-                memcpy(&flag, (void*)(uintptr_t)(base + SHM_DATASPACE_FLAG), 4);
-                if (flag) {
-                    uint32_t v = 0;
-                    memcpy(&v, (void*)(uintptr_t)(base + SHM_DATASPACE_VAL), 4);
-                    ds = (uint32_t)(((uint64_t)(v & 0xffffff00) | 0x100000000ULL) | (v & 0xff));
+            PoolEntry* de = pool_get(buffer);
+            if (de) {
+                auto it = de->stash.find(SMD_DATASPACE);
+                if (it != de->stash.end() && it->second.size() >= 4) {
+                    memcpy(&ds, it->second.data(), 4);
+                    return write_u32(h, name, ds, out, size);
                 }
             }
+            /* Base is never a real mapping here; the old shm read only
+             * produced UNKNOWN or garbage. Default YUV to BT.709. */
+            if (num_planes(h) > 1) ds = 0x20301;
             return write_u32(h, name, ds, out, size);
         }
         case SMD_BLEND_MODE:
@@ -1029,12 +1023,16 @@ static int32_t shim_setStandardMetadata(buffer_handle_t buffer, int64_t name, co
     }
     native_handle_t* h = e->handle;
     if (name == SMD_DATASPACE && data && size >= 4) {
-        uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-        if (!base) return AIMAPPER_ERROR_NO_RESOURCES;
         uint32_t v;
         memcpy(&v, data, 4);
-        uint64_t w = ((uint64_t)v << 32) | 1;
-        memcpy((void*)(uintptr_t)(base + SHM_DATASPACE_FLAG), &w, 8);
+        char tmp[4];
+        memcpy(tmp, &v, 4);
+        e->stash[name] = std::string(tmp, 4);
+        uint64_t base = h_u64(h, PH_MAPPED_ADDR);
+        if (base) {
+            uint64_t w = ((uint64_t)v << 32) | 1;
+            memcpy((void*)(uintptr_t)(base + SHM_DATASPACE_FLAG), &w, 8);
+        }
         return AIMAPPER_ERROR_NONE;
     }
     if ((name >= 16 && name <= 21) || name == SMD_BLEND_MODE) {
