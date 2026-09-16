@@ -351,6 +351,20 @@ if [ "$COMPAT_OPENCL_READY" = true ]; then
         cp "$COMPAT_RUNTIME_64" "$MODPATH/system/vendor/lib64/libOCLc.so"
         set_perm "$MODPATH/system/vendor/lib64/libOCLc.so" 0 0 0644 \
                  u:object_r:same_process_hal_file:s0
+        _pub_libs="/vendor/etc/public.libraries.txt"
+        if [ -f "$_pub_libs" ]; then
+            mkdir -p "$MODPATH/system/vendor/etc"
+            umount "$_pub_libs" 2>/dev/null
+            if grep -q "libOCLc.so" "$_pub_libs"; then
+                cp "$_pub_libs" "$MODPATH/system/vendor/etc/public.libraries.txt"
+            else
+                { cat "$_pub_libs"; printf '\nlibOCLc.so\n'; } \
+                    > "$MODPATH/system/vendor/etc/public.libraries.txt"
+            fi
+            set_perm "$MODPATH/system/vendor/etc/public.libraries.txt" \
+                     0 0 0644 u:object_r:vendor_configs_file:s0
+            ui_print " - libOCLc.so exposed to app namespaces"
+        fi
         ui_print " - $SOC_NAME private OpenCL compatibility runtime"
         # Stale snap JIT wedges processing; wipe once per blob build.
         [ -n "$SPHAL_DRIVER_BUILD" ] || SPHAL_DRIVER_BUILD="$SPHAL_NEW_DDK"
