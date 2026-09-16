@@ -645,9 +645,17 @@ static uint32_t plane_entry_w(const native_handle_t* h, uint32_t i) {
 static uint32_t plane_entry_h(const native_handle_t* h, uint32_t i) {
     return h_u32(h, PH_PLANE_ARR + i * 0x28 + PL_HEIGHT);
 }
+/* Some 82-int MFC handles store stride 4x; others store it 1x.
+ * Detect per plane (raw == 4 * entry w) instead of blanket /4. */
 static uint32_t plane_stride_bytes(const native_handle_t* h, uint32_t i) {
     uint32_t raw = plane_byte_stride(h, i);
-    if (raw) return raw;
+    if (raw) {
+        if (h->numInts == 82) {
+            uint32_t w = plane_entry_w(h, i);
+            if (w && raw == w * 4) return raw / 4;
+        }
+        return raw;
+    }
     uint32_t w = plane_entry_w(h, i);
     if (!w) w = (uint32_t)h_i32(h, PH_WIDTH);
     uint32_t bpp = (uint32_t)hal_format_bpp(h_i32(h, PH_REQ_FORMAT));
@@ -658,7 +666,9 @@ static uint32_t plane_stride_bytes(const native_handle_t* h, uint32_t i) {
  * bases at +0x108: off = *(h+0x108+i*8) - *(h+0x108), signed (multi-fd YUV
  * yields negatives). Otherwise off = raw +0x58. */
 static uint64_t plane_parcel_offset(const native_handle_t* h, uint32_t i, bool is_exynos) {
-    if (is_exynos && i == h_u32(h, PH_PLANE_ARR + i * 0x28 + 0x08)) {
+    /* 82-int handles carry per-fd mapping addresses at +0x108, not plane
+     * offsets; their entry offsets are already fd-relative. */
+    if (!stride_is_quad(h) && is_exynos && i == h_u32(h, PH_PLANE_ARR + i * 0x28 + 0x08)) {
         int64_t a = (int64_t)h_u64(h, 0x108 + (size_t)i * 8);
         int64_t b = (int64_t)h_u64(h, 0x108);
         return (uint64_t)(a - b);
