@@ -685,7 +685,11 @@ static uint64_t plane_total(const native_handle_t* h, uint32_t i, uint32_t nplan
     if (fdcount > 1 && i == h_u32(h, PH_PLANE_ARR + i * 0x28 + 0x08)) {
         return h_u64(h, PH_PLANE_ARR + i * 0x28 + 0x10);
     }
-    if (i + 1 < nplanes) return plane_offset(h, i + 1);
+    if (i + 1 < nplanes) {
+        uint64_t next = plane_parcel_offset(h, i + 1, handle_is_exynos(h));
+        uint64_t off = plane_parcel_offset(h, i, handle_is_exynos(h));
+        return next > off ? next - off : 0;
+    }
     uint32_t layers = h_u32(h, PH_LAYER_COUNT);
     uint64_t per = layers ? h_u64(h, PH_ALLOC_ARR) / layers : 0;
     uint64_t off = plane_offset(h, i);
@@ -762,6 +766,7 @@ static int32_t write_name(const native_handle_t* h, void* out, size_t size) {
 static int32_t write_plane_layouts(const native_handle_t* h, void* out, size_t size) {
     uint32_t n = num_planes(h);
     uint64_t intfmt = h_u64(h, PH_INTFMT);
+    uint32_t fourcc = drm_fourcc_from_handle(h);
     bool afbc = (intfmt & 0x100000000ULL) != 0;
     // Component assignment: RGB* -> R,G,B,(A); YUV -> Y + CbCr.
     struct Comp {
@@ -795,16 +800,23 @@ static int32_t write_plane_layouts(const native_handle_t* h, void* out, size_t s
                 comps[3] = {PLC_A, 24, 8};
                 ncomps = 4;
             }
-        } else {
-            if (i == 0) {
-                comps[0] = {PLC_Y, 0, 8};
-                ncomps = 1;
-            } else {
-                /* Interleaved VU order. */
+        } else if (i == 0) {
+            comps[0] = {PLC_Y, 0, 8};
+            ncomps = 1;
+        } else if (n == 2) {
+            /* Interleaved chroma: NV12 = CbCr, NV21 = CrCb. */
+            if (fourcc == 0x3132564eu) {
                 comps[0] = {PLC_CR, 0, 8};
                 comps[1] = {PLC_CB, 8, 8};
-                ncomps = 2;
+            } else {
+                comps[0] = {PLC_CB, 0, 8};
+                comps[1] = {PLC_CR, 8, 8};
             }
+            ncomps = 2;
+        } else {
+            /* Planar chroma: one component per plane (YV12 = V first). */
+            comps[0] = {(int64_t)(i == 1 ? PLC_CR : PLC_CB), 0, 8};
+            ncomps = 1;
         }
         c.put_u64((uint64_t)ncomps);
         for (int k = 0; k < ncomps; k++) {
@@ -818,9 +830,11 @@ static int32_t write_plane_layouts(const native_handle_t* h, void* out, size_t s
         if (!w) w = (uint32_t)h_i32(h, PH_WIDTH);
         if (!hh) hh = (uint32_t)h_i32(h, PH_HEIGHT);
         if (!stride) stride = (uint64_t)w * (uint32_t)hal_format_bpp(req);
-        /* sampleIncrement = sum of component sizes. */
+        /* Reference mapper emits component-size sum raw (bits) for
+         * multi-plane; single-plane keeps bytes (proven working). */
         uint64_t sampInc = 0;
         for (int k = 0; k < ncomps; k++) sampInc += (uint64_t)comps[k].sizeBits;
+        if (n == 1) sampInc /= 8;
         uint64_t total = plane_total(h, i, n);
         if (!total) total = (uint64_t)stride * hh;
         c.put_u64(plane_parcel_offset(h, i, handle_is_exynos(h)));
