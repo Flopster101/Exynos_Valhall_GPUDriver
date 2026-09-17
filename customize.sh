@@ -120,6 +120,8 @@ KMD_FLOPPY=no
 case "$(uname -r 2>/dev/null)" in
     *Floppy*) KMD_FLOPPY=yes ;;
 esac
+# Separate the check from whatever printed above.
+ui_print " "
 if [ -z "$KMD_VER" ]; then
     ui_print " ⚠️ Could not read /sys/module/mali_kbase/version!"
 else
@@ -132,7 +134,6 @@ else
     if [ "$KMD_OK" = yes ]; then
         ui_print " ✅ Detected Mali KMD: $KMD_VER"
     else
-        ui_print " "
         ui_print " ⚠️ Detected Mali KMD: $KMD_VER"
         ui_print " ! Your kernel driver is outdated!"
         if [ "$KMD_FLOPPY" = yes ]; then
@@ -141,8 +142,18 @@ else
         else
             ui_print " ! Fix: flash a kernel with a compatible Mali KMD."
         fi
-        ui_print " "
     fi
+fi
+# SBWC notice (Exynos 2100 only)
+case "$DRIVER_VER" in
+    r38*) SBWC_BROKEN=no ;;
+    *)    SBWC_BROKEN=yes ;;
+esac
+if [ "$COMPAT_PLATFORM" = "exynos2100" ] && [ "$SBWC_BROKEN" = yes ]; then
+    ui_print " "
+    ui_print " ⚠️ $DRIVER_VER on Exynos 2100 needs SBWC disabled,"
+    ui_print " ! or you will get video playback issues."
+    ui_print " "
 fi
 # Busybox tools ($BB_BIN); installer PATH may use toybox instead.
 # Never grep -b: busybox grep has no byte-offset flag.
