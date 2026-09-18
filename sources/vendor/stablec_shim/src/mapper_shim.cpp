@@ -873,6 +873,12 @@ static int32_t write_plane_layouts(const native_handle_t* h, void* out, size_t s
     return (int32_t)need;
 }
 
+static size_t shm_dataspace_offset(size_t map_size) {
+    if (map_size >= 0x8088) return SHM_DATASPACE_FLAG_EXYNOS2100;
+    if (map_size >= 0x2468) return SHM_DATASPACE_FLAG_EXYNOS1280;
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // getStandardMetadata dispatcher.
 // ---------------------------------------------------------------------------
@@ -967,12 +973,36 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
                 auto it = de->stash.find(SMD_DATASPACE);
                 if (it != de->stash.end() && it->second.size() >= 4) {
                     memcpy(&ds, it->second.data(), 4);
-                    return write_u32(h, name, ds, out, size);
+                    if (ds) return write_u32(h, name, ds, out, size);
+                }
+                uint64_t base = h_u64(h, PH_MAPPED_ADDR);
+                size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
+                size_t off = shm_dataspace_offset(map_size);
+                if (base && off) {
+                    int32_t flag = 0;
+                    memcpy(&flag, (const void*)(uintptr_t)(base + off), 4);
+                    if (flag) {
+                        uint32_t v = 0;
+                        memcpy(&v, (const void*)(uintptr_t)(base + off + 4), 4);
+                        if (v) ds = v;
+                    }
                 }
             }
-            /* Base is never a real mapping here; the old shm read only
-             * produced UNKNOWN or garbage. Default YUV to BT.709. */
-            if (num_planes(h) > 1) ds = 0x20301;
+            if (ds) return write_u32(h, name, ds, out, size);
+
+            if (num_planes(h) > 1) {
+                uint32_t w = (uint32_t)h_i32(h, PH_WIDTH);
+                uint32_t h_px = (uint32_t)h_i32(h, PH_HEIGHT);
+                if (w >= 3840 || h_px >= 3840 || (uint64_t)w * h_px >= 3840 * 1634) {
+                    ds = 0x10c60000;
+                } else if ((w <= 768 && h_px <= 480) || (h_px <= 768 && w <= 480)) {
+                    ds = 0x10c40000;
+                } else if ((w <= 768 && h_px <= 576) || (h_px <= 768 && w <= 576)) {
+                    ds = 0x10c20000;
+                } else {
+                    ds = 0x10c10000;
+                }
+            }
             return write_u32(h, name, ds, out, size);
         }
         case SMD_BLEND_MODE:
@@ -1029,9 +1059,11 @@ static int32_t shim_setStandardMetadata(buffer_handle_t buffer, int64_t name, co
         memcpy(tmp, &v, 4);
         e->stash[name] = std::string(tmp, 4);
         uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-        if (base) {
+        size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
+        size_t off = shm_dataspace_offset(map_size);
+        if (base && off) {
             uint64_t w = ((uint64_t)v << 32) | 1;
-            memcpy((void*)(uintptr_t)(base + SHM_DATASPACE_FLAG), &w, 8);
+            memcpy((void*)(uintptr_t)(base + off), &w, 8);
         }
         return AIMAPPER_ERROR_NONE;
     }

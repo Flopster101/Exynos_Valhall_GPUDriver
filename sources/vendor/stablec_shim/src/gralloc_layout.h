@@ -38,5 +38,7 @@
 #define PL_WIDTH            0x1c /* u32 width samples */
 #define PL_HEIGHT           0x20 /* u32 height samples */
 
-#define SHM_DATASPACE_FLAG  0x2a88
-#define SHM_DATASPACE_VAL   0x2a8c
+#define SHM_DATASPACE_FLAG_EXYNOS2100 0x8080
+#define SHM_DATASPACE_VAL_EXYNOS2100  0x8084
+#define SHM_DATASPACE_FLAG_EXYNOS1280 0x2460
+#define SHM_DATASPACE_VAL_EXYNOS1280  0x2464
