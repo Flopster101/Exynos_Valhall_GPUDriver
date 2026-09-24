@@ -599,29 +599,52 @@ static const char* kCompTypeName = "android.hardware.graphics.common.PlaneLayout
 static bool handle_is_exynos(const native_handle_t* h) {
     uint32_t fmt = h_u32(h, PH_INTFMT);
     return (fmt >= 0x100 && fmt < 0x200) || fmt == 0x11 || fmt == 0x14 || fmt == 0x16 ||
-           fmt == 0x2b || fmt == 0x20;
+           fmt == 0x2b || fmt == 0x20 || fmt == 0x23 || fmt == 0x36 || fmt == 0x10;
+}
+
+static bool is_yuv_format(uint32_t fmt) {
+    switch (fmt) {
+        case 1: case 2: case 3: case 4: case 5:
+        case 0x16: case 0x20: case 0x21: case 0x24:
+        case 0x25: case 0x26: case 0x2b: case 0x108:
+            return false;
+        default:
+            break;
+    }
+    if (fmt >= 0x1000 && fmt <= 0x1004) return false;
+    if (fmt >= 0x30 && fmt <= 0x35) return false;
+    return true;
 }
 
 /* Plane count: exynos format switch, aux-field fallback otherwise. */
 static uint32_t num_planes(const native_handle_t* h) {
     uint32_t fmt = h_u32(h, PH_INTFMT);
-    bool is_exynos = handle_is_exynos(h);
-    /* Non-listed exynos ids fall through to the aux path. */
-    if (is_exynos) {
-        switch (fmt) {
-            case 0x101:
-            case 0x11c:
-            case 0x11f:
-                return 3;
-            case 0x105: case 0x107: case 0x11d: case 0x11e: case 0x123: case 0x125:
-            case 0x126: case 0x127: case 0x130: case 0x131: case 0x132: case 0x133:
-            case 0x134: case 0x135: case 0x140: case 0x141: case 0x150: case 0x151:
-            case 0x160: case 0x161: case 0x162: case 0x170: case 0x171: case 0x172:
-                return 2;
-            default:
-                if (fmt == 0x11) return 3;
-                break;
-        }
+    switch (fmt) {
+        case 0x101:
+        case 0x11c: // YV12_M
+        case 0x11f: // YCbCr_420_P
+        case 0x122: // YCbCr_420_PN
+        case 0x128: // YCbCr_422_P
+        case 0x11:  // YV12
+        case 0x32315659: // 'YV12'
+            return 3;
+        case 0x105: case 0x106: case 0x107: case 0x11d: case 0x11e:
+        case 0x120: case 0x121: case 0x123: case 0x124: case 0x125:
+        case 0x126: case 0x127: case 0x129: case 0x12a:
+        case 0x130: case 0x131: case 0x132: case 0x133: case 0x134:
+        case 0x135: case 0x136: case 0x137:
+        case 0x140: case 0x141: case 0x150: case 0x151:
+        case 0x160: case 0x161: case 0x162: case 0x170: case 0x171: case 0x172:
+        case 0x180: case 0x181: case 0x182: case 0x183: case 0x184:
+        case 0x185: case 0x186: case 0x187: case 0x188: case 0x189:
+        case 0x10:       // NV16
+        case 0x23:       // YCBCR_420_888
+        case 0x36:       // YCBCR_P010
+        case 0x3231564e: // 'NV12'
+        case 0x3132564e: // 'NV21'
+            return 2;
+        default:
+            break;
     }
     // aux fallback
     if (h_i32(h, PH_NUMPLANES_AUX1) == 0) return 1;
@@ -879,6 +902,68 @@ static size_t shm_dataspace_offset(size_t map_size) {
     return 0;
 }
 
+static uint32_t normalize_dataspace(uint32_t ds, uint32_t fmt, uint32_t w, uint32_t h_px,
+                                    uint32_t nplanes) {
+    switch (ds) {
+        case 260: // HAL_DATASPACE_BT709
+            ds = 0x10c10000; break;
+        case 259: // HAL_DATASPACE_BT601_525
+            ds = 0x10c40000; break;
+        case 258: // HAL_DATASPACE_BT601_625
+            ds = 0x10c20000; break;
+        case 257: // HAL_DATASPACE_JFIF
+            ds = 0x08c20000; break;
+        case 513: // HAL_DATASPACE_SRGB
+            ds = 0x08810000; break;
+        case 512: // HAL_DATASPACE_SRGB_LINEAR
+            ds = 0x08410000; break;
+        case 0x20301:
+            ds = 0x10c10000; break;
+        default:
+            break;
+    }
+
+    bool yuv = is_yuv_format(fmt) || (nplanes > 1);
+
+    if (yuv) {
+        if (ds != 0) {
+            // Range check (bits 27..29): if unspecified, default to RANGE_LIMITED
+            if ((ds & 0x38000000) == 0) {
+                ds |= 0x10000000; // RANGE_LIMITED
+            }
+            // Standard check (bits 16..23): if unspecified, select by resolution
+            if ((ds & 0x00ff0000) == 0) {
+                if (w >= 3840 || h_px >= 3840 || (uint64_t)w * h_px >= 3840 * 1634) {
+                    ds |= 0x00060000; // STANDARD_BT2020
+                } else if ((w <= 768 && h_px <= 480) || (h_px <= 768 && w <= 480)) {
+                    ds |= 0x00040000; // STANDARD_BT601_525
+                } else if ((w <= 768 && h_px <= 576) || (h_px <= 768 && w <= 576)) {
+                    ds |= 0x00020000; // STANDARD_BT601_625
+                } else {
+                    ds |= 0x00010000; // STANDARD_BT709
+                }
+            }
+            // Transfer check (bits 22..26): if unspecified, default to SMPTE_170M
+            if ((ds & 0x07c00000) == 0) {
+                ds |= 0x00c00000; // TRANSFER_SMPTE_170M
+            }
+        } else {
+            // Unset dataspace fallback based on resolution
+            if (w >= 3840 || h_px >= 3840 || (uint64_t)w * h_px >= 3840 * 1634) {
+                ds = 0x10c60000; // BT2020 Limited
+            } else if ((w <= 768 && h_px <= 480) || (h_px <= 768 && w <= 480)) {
+                ds = 0x10c40000; // BT601_525 Limited
+            } else if ((w <= 768 && h_px <= 576) || (h_px <= 768 && w <= 576)) {
+                ds = 0x10c20000; // BT601_625 Limited
+            } else {
+                ds = 0x10c10000; // BT709 Limited
+            }
+        }
+    }
+
+    return ds;
+}
+
 // ---------------------------------------------------------------------------
 // getStandardMetadata dispatcher.
 // ---------------------------------------------------------------------------
@@ -973,8 +1058,9 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
                 auto it = de->stash.find(SMD_DATASPACE);
                 if (it != de->stash.end() && it->second.size() >= 4) {
                     memcpy(&ds, it->second.data(), 4);
-                    if (ds) return write_u32(h, name, ds, out, size);
                 }
+            }
+            if (!ds) {
                 uint64_t base = h_u64(h, PH_MAPPED_ADDR);
                 size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
                 size_t off = shm_dataspace_offset(map_size);
@@ -988,21 +1074,12 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
                     }
                 }
             }
-            if (ds) return write_u32(h, name, ds, out, size);
 
-            if (num_planes(h) > 1) {
-                uint32_t w = (uint32_t)h_i32(h, PH_WIDTH);
-                uint32_t h_px = (uint32_t)h_i32(h, PH_HEIGHT);
-                if (w >= 3840 || h_px >= 3840 || (uint64_t)w * h_px >= 3840 * 1634) {
-                    ds = 0x10c60000;
-                } else if ((w <= 768 && h_px <= 480) || (h_px <= 768 && w <= 480)) {
-                    ds = 0x10c40000;
-                } else if ((w <= 768 && h_px <= 576) || (h_px <= 768 && w <= 576)) {
-                    ds = 0x10c20000;
-                } else {
-                    ds = 0x10c10000;
-                }
-            }
+            uint32_t fmt = h_u32(h, PH_INTFMT);
+            uint32_t w = (uint32_t)h_i32(h, PH_WIDTH);
+            uint32_t h_px = (uint32_t)h_i32(h, PH_HEIGHT);
+
+            ds = normalize_dataspace(ds, fmt, w, h_px, num_planes(h));
             return write_u32(h, name, ds, out, size);
         }
         case SMD_BLEND_MODE:
@@ -1055,6 +1132,10 @@ static int32_t shim_setStandardMetadata(buffer_handle_t buffer, int64_t name, co
     if (name == SMD_DATASPACE && data && size >= 4) {
         uint32_t v;
         memcpy(&v, data, 4);
+        uint32_t fmt = h_u32(h, PH_INTFMT);
+        uint32_t bw = (uint32_t)h_i32(h, PH_WIDTH);
+        uint32_t bh = (uint32_t)h_i32(h, PH_HEIGHT);
+        v = normalize_dataspace(v, fmt, bw, bh, num_planes(h));
         char tmp[4];
         memcpy(tmp, &v, 4);
         e->stash[name] = std::string(tmp, 4);
