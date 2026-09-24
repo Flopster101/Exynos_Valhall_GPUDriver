@@ -404,16 +404,39 @@ rm -rf "$MODPATH/compat_opencl"
 # here: its public shim dispatches 64-bit OpenCL calls into private platform runtimes.
 if [ -f "$MODPATH/system/vendor/lib64/egl/libGLES_mali.so" ]; then
     cp "$MODPATH/system/vendor/lib64/egl/libGLES_mali.so" "$MODPATH/system/vendor/lib64/libGLES_mali.so"
+    set_perm "$MODPATH/system/vendor/lib64/libGLES_mali.so" 0 0 0644 u:object_r:same_process_hal_file:s0
 fi
 
-if [ -z "$(getprop ro.bionic.2nd_arch)" ]; then
-    ui_print " - 64-bit only device, removing 32-bit blobs"
-    rm -rf $MODPATH/system/vendor/lib
-else
-    ui_print " - 32/64-bit device"
+# Detect 32-bit support across both system and vendor. Ported ROMs from newer
+# devices (e.g. S26 on S21) may have a 64-bit only system but a 32/64 vendor.
+HAS_32BIT=false
+if [ -n "$(getprop ro.bionic.2nd_arch)" ] || \
+   [ -n "$(getprop ro.vendor.product.cpu.abilist32)" ] || \
+   [ -n "$(getprop ro.product.cpu.abilist32)" ]; then
+    HAS_32BIT=true
+elif case "$(getprop ro.vendor.product.cpu.abilist)" in *armeabi*) true ;; *) false ;; esac; then
+    HAS_32BIT=true
+elif [ -f "/vendor/lib/egl/libGLES_mali.so" ] || [ -f "/vendor/lib/libGLES_mali.so" ] || \
+     [ -d "/vendor/lib/egl" ] || [ -d "/vendor/lib/hw" ]; then
+    HAS_32BIT=true
+elif [ -d "/vendor/lib" ] && [ -n "$(ls -A /vendor/lib 2>/dev/null)" ]; then
+    HAS_32BIT=true
+fi
+
+if [ "$HAS_32BIT" = true ]; then
+    if [ -z "$(getprop ro.bionic.2nd_arch)" ]; then
+        ui_print " - 64-bit system with 32/64-bit vendor"
+    else
+        ui_print " - 32/64-bit device"
+    fi
     if [ -f "$MODPATH/system/vendor/lib/egl/libGLES_mali.so" ]; then
         cp "$MODPATH/system/vendor/lib/egl/libGLES_mali.so" "$MODPATH/system/vendor/lib/libGLES_mali.so"
+        set_perm "$MODPATH/system/vendor/lib/libGLES_mali.so" 0 0 0644 u:object_r:same_process_hal_file:s0
     fi
+    [ -d "$MODPATH/system/vendor/lib" ] && set_perm_recursive $MODPATH/system/vendor/lib 0 0 0755 0644 u:object_r:same_process_hal_file:s0
+else
+    ui_print " - 64-bit only device, removing 32-bit blobs"
+    rm -rf $MODPATH/system/vendor/lib
 fi
 
 # Strip bundled HAL support libs if already present on real vendor.
