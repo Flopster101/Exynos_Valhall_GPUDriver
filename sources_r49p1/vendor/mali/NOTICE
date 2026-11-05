@@ -1,0 +1,11 @@
+Exynos Valhall GPU Driver — Source Information
+
+Driver Blob Source (64-bit):
+- Software Version: A185FXXU1AZHG (Samsung One UI Stock)
+- Device / Platform: Galaxy A18 (SM-A185F)
+- Driver Release: r54p1
+
+Driver Blob Source (32-bit):
+- Software Version: L320XXS2AZF4 (Samsung One UI Watch stock)
+- Device / Platform: Galaxy Watch8 (SM-L320) / Exynos W1000
+- Driver Release: r49p1

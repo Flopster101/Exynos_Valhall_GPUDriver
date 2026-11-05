@@ -1,0 +1,28 @@
+# User-supplied driver blobs — never tracked. Only the folder shape and the
+# files this repo generates from them are committed.
+*
+*/
+!.gitignore
+!vendor/
+!vendor/mali/
+!vendor/mali/NOTICE
+!vendor/support/
+!vendor/support/lib/
+!vendor/support/lib64/
+!vendor/vkshim/
+!vendor/permissions/
+!vendor/permissions/*.xml
+!vendor/opencl_compat/
+!vendor/opencl_compat/README.md
+!vendor/opencl_compat/exynos2100/
+!vendor/opencl_compat/exynos2100/.gitkeep
+!vendor/opencl_compat/exynos1280/
+!vendor/opencl_compat/exynos1280/.gitkeep
+!vendor/opencl_compat/exynos1380/
+!vendor/opencl_compat/exynos1380/.gitkeep
+!vendor/opencl_compat/exynos1330/
+!vendor/opencl_compat/exynos1330/.gitkeep
+!vendor/opencl_compat/exynos2100/NOTICE
+!vendor/opencl_compat/exynos1280/NOTICE
+!vendor/opencl_compat/exynos1380/NOTICE
+!vendor/opencl_compat/exynos1330/NOTICE

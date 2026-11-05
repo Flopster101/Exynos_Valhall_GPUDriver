@@ -83,6 +83,23 @@ check_conflicting_modules
 
 sleep 1
 
+# Flashing one DDK version over another reuses the module directory, so payloads
+# from the version being replaced would otherwise stay mounted next to the new
+# ones and get dlopened. Keep exactly what this build shipped.
+if [ -f "$MODPATH/.manifest" ]; then
+    find "$MODPATH/system" -type f 2>/dev/null | while read -r _f; do
+        _rel="${_f#"$MODPATH"/}"
+        grep -qxF "$_rel" "$MODPATH/.manifest" || rm -f "$_f"
+    done
+    find "$MODPATH/system" -depth -type d -empty -delete 2>/dev/null
+fi
+# The stable-C shim only applies to drivers that load the stable-C mapper.
+# A stale copy from a previous install must never ride along on another DDK.
+if [ "$DRIVER_VER" != "r54p1" ]; then
+    rm -f "$MODPATH/system/vendor/lib64/hw/mapper.mali.so"
+    rm -f "$MODPATH/system/vendor/lib64/libbinder_ml.so"
+fi
+
 set_perm_recursive $MODPATH/system/vendor 0 0 0755 0644 u:object_r:same_process_hal_file:s0
 [ -d "$MODPATH/system/lib64" ] && set_perm_recursive $MODPATH/system/lib64 0 0 0755 0644 u:object_r:system_file:s0
 
@@ -450,13 +467,11 @@ if [ "$MODULE_ACTIVE" = false ]; then
     if [ -f "/vendor/lib64/android.hardware.graphics.allocator-V2-ndk.so" ]; then
         ui_print " - Removing redundant 64-bit HAL support libs"
         rm -f $MODPATH/system/vendor/lib64/android.hardware.*.so
-        rm -f $MODPATH/system/vendor/lib64/libcxx.so
         rm -f $MODPATH/system/vendor/lib64/libgralloctypes.so
     fi
     if [ -f "/vendor/lib/android.hardware.graphics.allocator-V2-ndk.so" ]; then
         ui_print " - Removing redundant 32-bit HAL support libs"
         rm -f $MODPATH/system/vendor/lib/android.hardware.*.so
-        rm -f $MODPATH/system/vendor/lib/libcxx.so
         rm -f $MODPATH/system/vendor/lib/libgralloctypes.so
     fi
 else

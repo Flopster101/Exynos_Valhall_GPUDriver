@@ -1,0 +1,3 @@
+# Build output
+out/
+*.64.so
