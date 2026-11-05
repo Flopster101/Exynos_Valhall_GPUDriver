@@ -5,3 +5,6 @@ system/
 # Editor
 .vscode/
 .idea/
+
+# Per-variant blob trees (user-supplied, never tracked).
+sources_*/
