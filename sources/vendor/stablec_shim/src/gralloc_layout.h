@@ -38,6 +38,8 @@
 #define PL_WIDTH            0x1c /* u32 width samples */
 #define PL_HEIGHT           0x20 /* u32 height samples */
 
+/* Shared-metadata slots. Each slot starts with a u32 valid flag followed
+ * by its value. The SoC layout is selected by mapping size. */
 #define SHM_DATASPACE_FLAG_EXYNOS2100 0x8080
 #define SHM_DATASPACE_VAL_EXYNOS2100  0x8084
 #define SHM_DATASPACE_FLAG_EXYNOS1280 0x2460
@@ -47,3 +49,19 @@
 #define SHM_CROP_RECT_EXYNOS2100      0x8064
 #define SHM_CROP_FLAG_EXYNOS1280      0x2440
 #define SHM_CROP_RECT_EXYNOS1280      0x2444
+
+/* Per-SoC shared-metadata layout. */
+struct ShmLayout {
+    size_t min_map_size;
+    size_t dataspace_flag;
+    size_t dataspace_val;
+    size_t crop_flag;
+    size_t crop_rect;
+};
+
+#define SHM_LAYOUT_EXYNOS2100 {0x8088, SHM_DATASPACE_FLAG_EXYNOS2100, \
+    SHM_DATASPACE_VAL_EXYNOS2100, SHM_CROP_FLAG_EXYNOS2100, \
+    SHM_CROP_RECT_EXYNOS2100}
+#define SHM_LAYOUT_EXYNOS1280 {0x2468, SHM_DATASPACE_FLAG_EXYNOS1280, \
+    SHM_DATASPACE_VAL_EXYNOS1280, SHM_CROP_FLAG_EXYNOS1280, \
+    SHM_CROP_RECT_EXYNOS1280}

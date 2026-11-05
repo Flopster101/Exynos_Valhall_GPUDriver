@@ -897,16 +897,39 @@ static int32_t write_plane_layouts(const native_handle_t* h, void* out, size_t s
     return (int32_t)need;
 }
 
-static size_t shm_dataspace_offset(size_t map_size) {
-    if (map_size >= 0x8088) return SHM_DATASPACE_FLAG_EXYNOS2100;
-    if (map_size >= 0x2468) return SHM_DATASPACE_FLAG_EXYNOS1280;
-    return 0;
+/* SoC layout for a mapping of this size; 2100 mappings are the larger
+ * of the two so they must be tested first. */
+static const ShmLayout* shm_layout(size_t map_size) {
+    static const ShmLayout kLayout2100 = SHM_LAYOUT_EXYNOS2100;
+    static const ShmLayout kLayout1280 = SHM_LAYOUT_EXYNOS1280;
+    if (map_size >= kLayout2100.min_map_size) return &kLayout2100;
+    if (map_size >= kLayout1280.min_map_size) return &kLayout1280;
+    return nullptr;
 }
 
-static size_t shm_crop_offset(size_t map_size) {
-    if (map_size >= 0x8088) return SHM_CROP_FLAG_EXYNOS2100;
-    if (map_size >= 0x2468) return SHM_CROP_FLAG_EXYNOS1280;
-    return 0;
+/* Slot value, or false when the slot is absent or unset. */
+static bool shm_read(const native_handle_t* h, size_t slot, void* out, size_t len) {
+    uint64_t base = h_u64(h, PH_MAPPED_ADDR);
+    size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
+    const ShmLayout* l = shm_layout(map_size);
+    if (!base || !l || slot + 4 + len > map_size) return false;
+    uint32_t flag = 0;
+    memcpy(&flag, (const void*)(uintptr_t)(base + slot), 4);
+    if (!flag) return false;
+    memcpy(out, (const void*)(uintptr_t)(base + slot + 4), len);
+    return true;
+}
+
+/* Publish a slot value, marking it valid. */
+static bool shm_write(const native_handle_t* h, size_t slot, const void* in, size_t len) {
+    uint64_t base = h_u64(h, PH_MAPPED_ADDR);
+    size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
+    const ShmLayout* l = shm_layout(map_size);
+    if (!base || !l || slot + 4 + len > map_size) return false;
+    uint32_t flag = 1;
+    memcpy((void*)(uintptr_t)(base + slot), &flag, 4);
+    memcpy((void*)(uintptr_t)(base + slot + 4), in, len);
+    return true;
 }
 
 static uint32_t normalize_dataspace(uint32_t ds, uint32_t fmt, uint32_t w, uint32_t h_px,
@@ -1071,19 +1094,14 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
                     }
                 }
                 if (!has_crop) {
-                    uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-                    size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
-                    size_t off = shm_crop_offset(map_size);
-                    if (base && off) {
-                        int32_t flag = 0;
-                        memcpy(&flag, (const void*)(uintptr_t)(base + off), 4);
-                        if (flag) {
-                            memcpy(&crop_l, (const void*)(uintptr_t)(base + off + 4), 4);
-                            memcpy(&crop_t, (const void*)(uintptr_t)(base + off + 8), 4);
-                            memcpy(&crop_r, (const void*)(uintptr_t)(base + off + 12), 4);
-                            memcpy(&crop_b, (const void*)(uintptr_t)(base + off + 16), 4);
-                            has_crop = true;
-                        }
+                    int32_t rect[4];
+                    const ShmLayout* l = shm_layout((size_t)h_u64(h, PH_MAPPED_SIZE));
+                    if (l && shm_read(h, l->crop_rect, rect, sizeof(rect))) {
+                        crop_l = rect[0];
+                        crop_t = rect[1];
+                        crop_r = rect[2];
+                        crop_b = rect[3];
+                        has_crop = true;
                     }
                 }
             }
@@ -1122,18 +1140,9 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
                 }
             }
             if (!ds) {
-                uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-                size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
-                size_t off = shm_dataspace_offset(map_size);
-                if (base && off) {
-                    int32_t flag = 0;
-                    memcpy(&flag, (const void*)(uintptr_t)(base + off), 4);
-                    if (flag) {
-                        uint32_t v = 0;
-                        memcpy(&v, (const void*)(uintptr_t)(base + off + 4), 4);
-                        if (v) ds = v;
-                    }
-                }
+                uint32_t v = 0;
+                const ShmLayout* l = shm_layout((size_t)h_u64(h, PH_MAPPED_SIZE));
+                if (l && shm_read(h, l->dataspace_val, &v, sizeof(v)) && v) ds = v;
             }
 
             uint32_t fmt = h_u32(h, PH_INTFMT);
@@ -1200,40 +1209,20 @@ static int32_t shim_setStandardMetadata(buffer_handle_t buffer, int64_t name, co
         char tmp[4];
         memcpy(tmp, &v, 4);
         e->stash[name] = std::string(tmp, 4);
-        uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-        size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
-        size_t off = shm_dataspace_offset(map_size);
-        if (base && off) {
-            uint64_t w = ((uint64_t)v << 32) | 1;
-            memcpy((void*)(uintptr_t)(base + off), &w, 8);
-        }
+        const ShmLayout* l = shm_layout((size_t)h_u64(h, PH_MAPPED_SIZE));
+        if (l) shm_write(h, l->dataspace_val, &v, sizeof(v));
         return AIMAPPER_ERROR_NONE;
     }
     if (name == SMD_CROP && data && size >= 16) {
         e->stash[name] = std::string((const char*)data, size);
-        uint64_t base = h_u64(h, PH_MAPPED_ADDR);
-        size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
-        size_t off = shm_crop_offset(map_size);
-        if (base && off) {
-            int32_t l = 0, t = 0, r = 0, b = 0;
-            if (size == 16) {
-                memcpy(&l, (const char*)data + 0, 4);
-                memcpy(&t, (const char*)data + 4, 4);
-                memcpy(&r, (const char*)data + 8, 4);
-                memcpy(&b, (const char*)data + 12, 4);
-            } else if (size >= 24) {
-                memcpy(&l, (const char*)data + 8, 4);
-                memcpy(&t, (const char*)data + 12, 4);
-                memcpy(&r, (const char*)data + 16, 4);
-                memcpy(&b, (const char*)data + 20, 4);
-            }
-            uint32_t flag = 1;
-            memcpy((void*)(uintptr_t)(base + off), &flag, 4);
-            memcpy((void*)(uintptr_t)(base + off + 4), &l, 4);
-            memcpy((void*)(uintptr_t)(base + off + 8), &t, 4);
-            memcpy((void*)(uintptr_t)(base + off + 12), &r, 4);
-            memcpy((void*)(uintptr_t)(base + off + 16), &b, 4);
-        }
+        /* Single rect is a bare Rect; otherwise a vector prefixed by its
+         * element count. Only the first rect is published. */
+        size_t at = (size == 16) ? 0 : 8;
+        if (at + 16 > size) return AIMAPPER_ERROR_NONE;
+        int32_t rect[4];
+        memcpy(rect, (const char*)data + at, sizeof(rect));
+        const ShmLayout* l = shm_layout((size_t)h_u64(h, PH_MAPPED_SIZE));
+        if (l) shm_write(h, l->crop_rect, rect, sizeof(rect));
         return AIMAPPER_ERROR_NONE;
     }
     if ((name >= 16 && name <= 21) || name == SMD_BLEND_MODE) {
