@@ -668,12 +668,13 @@ static uint32_t plane_entry_w(const native_handle_t* h, uint32_t i) {
 static uint32_t plane_entry_h(const native_handle_t* h, uint32_t i) {
     return h_u32(h, PH_PLANE_ARR + i * 0x28 + PL_HEIGHT);
 }
-/* Some 82-int MFC handles store stride 4x; others store it 1x.
- * Detect per plane (raw == 4 * entry w) instead of blanket /4. */
+/* Some MFC handles store stride 4x; others store it 1x.
+ * Detect per plane (raw == 4 * entry w) for YUV formats instead of blanket /4. */
 static uint32_t plane_stride_bytes(const native_handle_t* h, uint32_t i) {
     uint32_t raw = plane_byte_stride(h, i);
     if (raw) {
-        if (h->numInts == 82) {
+        uint32_t fmt = h_u32(h, PH_INTFMT);
+        if (is_yuv_format(fmt) || num_planes(h) > 1) {
             uint32_t w = plane_entry_w(h, i);
             if (w && raw == w * 4) return raw / 4;
         }
@@ -902,6 +903,12 @@ static size_t shm_dataspace_offset(size_t map_size) {
     return 0;
 }
 
+static size_t shm_crop_offset(size_t map_size) {
+    if (map_size >= 0x8088) return SHM_CROP_FLAG_EXYNOS2100;
+    if (map_size >= 0x2468) return SHM_CROP_FLAG_EXYNOS1280;
+    return 0;
+}
+
 static uint32_t normalize_dataspace(uint32_t ds, uint32_t fmt, uint32_t w, uint32_t h_px,
                                     uint32_t nplanes) {
     switch (ds) {
@@ -1036,17 +1043,71 @@ static int32_t shim_getStandardMetadata(const native_handle_t* buffer, int64_t n
             uint8_t* p = o + 0x45;
             *(uint64_t*)p = n;
             p += 8;
+
+            int32_t crop_l = 0, crop_t = 0;
+            int32_t crop_r = h_i32(h, PH_WIDTH);
+            int32_t crop_b = h_i32(h, PH_HEIGHT);
+            bool has_crop = false;
+
+            PoolEntry* de = pool_get(buffer);
+            if (de) {
+                auto it = de->stash.find(SMD_CROP);
+                if (it != de->stash.end()) {
+                    if (it->second.size() == 16) {
+                        memcpy(&crop_l, it->second.data() + 0, 4);
+                        memcpy(&crop_t, it->second.data() + 4, 4);
+                        memcpy(&crop_r, it->second.data() + 8, 4);
+                        memcpy(&crop_b, it->second.data() + 12, 4);
+                        has_crop = true;
+                    } else if (it->second.size() >= 24) {
+                        uint64_t count = *(const uint64_t*)it->second.data();
+                        if (count >= 1 && it->second.size() >= 8 + 16) {
+                            memcpy(&crop_l, it->second.data() + 8, 4);
+                            memcpy(&crop_t, it->second.data() + 12, 4);
+                            memcpy(&crop_r, it->second.data() + 16, 4);
+                            memcpy(&crop_b, it->second.data() + 20, 4);
+                            has_crop = true;
+                        }
+                    }
+                }
+                if (!has_crop) {
+                    uint64_t base = h_u64(h, PH_MAPPED_ADDR);
+                    size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
+                    size_t off = shm_crop_offset(map_size);
+                    if (base && off) {
+                        int32_t flag = 0;
+                        memcpy(&flag, (const void*)(uintptr_t)(base + off), 4);
+                        if (flag) {
+                            memcpy(&crop_l, (const void*)(uintptr_t)(base + off + 4), 4);
+                            memcpy(&crop_t, (const void*)(uintptr_t)(base + off + 8), 4);
+                            memcpy(&crop_r, (const void*)(uintptr_t)(base + off + 12), 4);
+                            memcpy(&crop_b, (const void*)(uintptr_t)(base + off + 16), 4);
+                            has_crop = true;
+                        }
+                    }
+                }
+            }
+
             for (uint32_t i = 0; i < n; i++) {
-                /* Rect = min(plane dims, buffer dims). */
-                uint32_t bw = (uint32_t)h_i32(h, PH_WIDTH);
-                uint32_t bh = (uint32_t)h_i32(h, PH_HEIGHT);
-                uint32_t w = plane_samples_w(h, i, n), hh = plane_samples_h(h, i, n);
-                if (!w || w > bw) w = bw;
-                if (!hh || hh > bh) hh = bh;
-                *(uint32_t*)(p + 0) = 0;
-                *(uint32_t*)(p + 4) = 0;
-                *(uint32_t*)(p + 8) = w;
-                *(uint32_t*)(p + 12) = hh;
+                if (i == 0) {
+                    int32_t l = has_crop ? crop_l : 0;
+                    int32_t t = has_crop ? crop_t : 0;
+                    int32_t r = has_crop ? crop_r : h_i32(h, PH_WIDTH);
+                    int32_t b = has_crop ? crop_b : h_i32(h, PH_HEIGHT);
+                    *(int32_t*)(p + 0) = l;
+                    *(int32_t*)(p + 4) = t;
+                    *(int32_t*)(p + 8) = r;
+                    *(int32_t*)(p + 12) = b;
+                } else {
+                    uint32_t pw = plane_entry_w(h, i);
+                    uint32_t ph = plane_entry_h(h, i);
+                    if (!pw) pw = plane_samples_w(h, i, n);
+                    if (!ph) ph = plane_samples_h(h, i, n);
+                    *(int32_t*)(p + 0) = 0;
+                    *(int32_t*)(p + 4) = 0;
+                    *(int32_t*)(p + 8) = (int32_t)pw;
+                    *(int32_t*)(p + 12) = (int32_t)ph;
+                }
                 p += 16;
             }
             return (int32_t)need;
@@ -1145,6 +1206,33 @@ static int32_t shim_setStandardMetadata(buffer_handle_t buffer, int64_t name, co
         if (base && off) {
             uint64_t w = ((uint64_t)v << 32) | 1;
             memcpy((void*)(uintptr_t)(base + off), &w, 8);
+        }
+        return AIMAPPER_ERROR_NONE;
+    }
+    if (name == SMD_CROP && data && size >= 16) {
+        e->stash[name] = std::string((const char*)data, size);
+        uint64_t base = h_u64(h, PH_MAPPED_ADDR);
+        size_t map_size = (size_t)h_u64(h, PH_MAPPED_SIZE);
+        size_t off = shm_crop_offset(map_size);
+        if (base && off) {
+            int32_t l = 0, t = 0, r = 0, b = 0;
+            if (size == 16) {
+                memcpy(&l, (const char*)data + 0, 4);
+                memcpy(&t, (const char*)data + 4, 4);
+                memcpy(&r, (const char*)data + 8, 4);
+                memcpy(&b, (const char*)data + 12, 4);
+            } else if (size >= 24) {
+                memcpy(&l, (const char*)data + 8, 4);
+                memcpy(&t, (const char*)data + 12, 4);
+                memcpy(&r, (const char*)data + 16, 4);
+                memcpy(&b, (const char*)data + 20, 4);
+            }
+            uint32_t flag = 1;
+            memcpy((void*)(uintptr_t)(base + off), &flag, 4);
+            memcpy((void*)(uintptr_t)(base + off + 4), &l, 4);
+            memcpy((void*)(uintptr_t)(base + off + 8), &t, 4);
+            memcpy((void*)(uintptr_t)(base + off + 12), &r, 4);
+            memcpy((void*)(uintptr_t)(base + off + 16), &b, 4);
         }
         return AIMAPPER_ERROR_NONE;
     }
